@@ -17,11 +17,12 @@ import (
 )
 
 // File to store count persistently
-const saveFile = "save/total.json"
+const saveFile = "save/count.json"
 
 type HeadpatCount struct {
-	StreamCount int `json:"count"`
-	TotalCount  int `json:"total"`
+	StreamCount int    `json:"count"`
+	TotalCount  int    `json:"total"`
+	Timestamp   string `json:"timestamp"`
 }
 
 type Headpat struct {
@@ -81,12 +82,19 @@ func onStreamEnd() {
 	}
 
 	state.streamID = ""
-	state.count = 0
 	clear(state.headpats)
 }
 
+// Send count to all clients
+func sendHeadpats() {
+	for client := range state.clients {
+		client <- NewHeadpatCount()
+	}
+}
+
 type SaveState struct {
-	Total int `json:"total"`
+	Total      int `json:"total"`
+	Incomplete int `json:"incomplete"`
 }
 
 func loadFromFile() {
@@ -106,6 +114,7 @@ func loadFromFile() {
 	}
 
 	state.total = saveState.Total
+	state.count = saveState.Incomplete
 }
 
 func saveToFile() {
@@ -117,7 +126,7 @@ func saveToFile() {
 	defer file.Close()
 
 	encoder := json.NewEncoder(file)
-	saveState := SaveState{state.total}
+	saveState := SaveState{state.total, state.count}
 	if err := encoder.Encode(saveState); err != nil {
 		log.Println("Error encoding save state:", err)
 	}
@@ -129,12 +138,51 @@ func NewHeadpatCount() HeadpatCount {
 	return HeadpatCount{
 		StreamCount: state.count,
 		TotalCount:  state.total,
+		Timestamp:   string(time.Now().Format(time.RFC3339Nano)),
 	}
 }
 
 // Get the current headpat count
 func getCount(c *gin.Context) {
 	c.JSON(http.StatusOK, NewHeadpatCount())
+}
+
+// Complete headpats
+// - an amount of -1 resets counter to 0 (Head has been thoroughly patted)
+// - an amount of any number > 0 subtracts that number from the count
+func onComplete(c *gin.Context) {
+	type RequestBody struct {
+		Amount int `json:"amount"`
+	}
+
+	state.mu.Lock()
+	defer state.mu.Unlock()
+
+	var req RequestBody
+	if err := c.BindJSON(&req); err != nil {
+		log.Println("Error:", err)
+		return
+	}
+
+	oldCount := state.count
+	if req.Amount == -1 {
+		log.Println("Head has been thoroughly patted! (all headpats completed)")
+		state.count = 0
+	} else if req.Amount > 0 {
+		state.count -= req.Amount
+		if state.count < 0 {
+			state.count = 0
+		}
+		log.Printf("%d headpats completed!\n", oldCount-state.count)
+	} else {
+		// amount is zero or negative >:(
+		c.AbortWithStatus(http.StatusBadRequest)
+	}
+
+	if oldCount != state.count {
+		state.isDirty = true
+		sendHeadpats()
+	}
 }
 
 func getEvents(c *gin.Context) {
@@ -256,12 +304,7 @@ func handleNotification(notification map[string]any) {
 
 	switch subscriptionType {
 	case "channel.channel_points_custom_reward_redemption.add":
-		// Stop counting when 100 headpats has been reached
-		if state.count >= 100 {
-			break
-		}
-
-		// Skip headpat events if steam is not live
+		// Skip headpat events if stream is not live
 		if state.streamID == "" {
 			break
 		}
@@ -288,25 +331,14 @@ func handleNotification(notification map[string]any) {
 		}
 
 		addHeadpat(eventID, headpat)
-
-		// Send count to all clients
-		for client := range state.clients {
-			client <- NewHeadpatCount()
-		}
-
-		if state.count == 100 {
-			onStreamEnd()
-		}
+		sendHeadpats()
 
 	case "stream.online":
 		log.Println("Stream online")
 
 		streamID := event.(map[string]any)["id"].(string)
 		onStreamStart(streamID)
-
-		for client := range state.clients {
-			client <- NewHeadpatCount()
-		}
+		sendHeadpats()
 
 	case "stream.offline":
 		log.Println("Stream offline")
@@ -339,6 +371,7 @@ func main() {
 	router.GET("/count", getCount)
 	router.GET("/events", getEvents)
 	router.POST("/notification", onWebhookEvent)
+	router.POST("/complete-headpats", onComplete)
 
 	port := os.Getenv("PORT")
 	if port == "" {

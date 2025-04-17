@@ -60,20 +60,25 @@
             const countEl = document.getElementById("count");
             const totalEl = document.getElementById("total");
 
-            let _total = 0;
             let isHidden = true;
             const container = document.getElementById("container");
 
+            let mostRecentTimestamp = new Date(0);
+
             function update(data) {
+                const timestamp = new Date(data.timestamp);
+                if (timestamp <= mostRecentTimestamp) return;
+                mostRecentTimestamp = timestamp;
+
                 const total = parseInt(data.total);
-                if (total > _total) {
-                    _total = total;
-                    countEl.innerText = data.count;
-                    totalEl.innerText = data.total;
-                    if (isHidden) {
-                        container.classList.remove("hidden");
-                        isHidden = false;
-                    }
+                const count = parseInt(data.count);
+                if (isNaN(count) || isNaN(total)) return;
+
+                countEl.innerText = count;
+                totalEl.innerText = total;
+                if (isHidden) {
+                    container.classList.remove("hidden");
+                    isHidden = false;
                 }
             }
 
