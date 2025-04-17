@@ -161,6 +161,20 @@ func getOverlay(c *gin.Context) {
 	c.File("index.html")
 }
 
+// Handle twitch oauth callback
+func getAuth(c *gin.Context) {
+	error := c.Query("error")
+	code := c.Query("code")
+
+	if error != "" {
+		log.Println("Authorization error: ", c.Query("error_description"))
+	}
+
+	if code != "" {
+		log.Println("Authorization code recieved")
+	}
+}
+
 // Before handling any message, we must make sure that it was sent by Twitch.
 func verifySignature(messageSignature, messageID, messageTimestamp string, body []byte) bool {
 	webhookSecret := os.Getenv("WEBHOOK_SECRET")
@@ -321,6 +335,7 @@ func main() {
 	router := gin.New()
 	router.SetTrustedProxies(nil)
 	router.GET("/", getOverlay)
+	router.GET("/auth", getAuth)
 	router.GET("/count", getCount)
 	router.GET("/events", getEvents)
 	router.POST("/notification", onWebhookEvent)
