@@ -1,0 +1,9 @@
+# environment file
+.env
+
+# editor settings
+.vscode/
+.zed/
+
+/bin
+/log
