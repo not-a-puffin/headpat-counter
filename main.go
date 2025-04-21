@@ -359,6 +359,9 @@ func saveService() {
 	}
 }
 
+//go:embed assets/*
+var f embed.FS
+
 func main() {
 	// Load environment variables
 	godotenv.Load()
