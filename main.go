@@ -3,6 +3,7 @@ package main
 import (
 	"crypto/hmac"
 	"crypto/sha256"
+	"embed"
 	"encoding/hex"
 	"encoding/json"
 	"io"
@@ -372,6 +373,33 @@ func main() {
 	router.GET("/events", getEvents)
 	router.POST("/notification", onWebhookEvent)
 	router.POST("/complete-headpats", onComplete)
+
+	router.GET("favicon.ico", func(c *gin.Context) {
+		file, _ := f.ReadFile("assets/favicon.ico")
+		c.Data(
+			http.StatusOK,
+			"image/x-icon",
+			file,
+		)
+	})
+
+	router.GET("favicon.svg", func(c *gin.Context) {
+		file, _ := f.ReadFile("assets/favicon.svg")
+		c.Data(
+			http.StatusOK,
+			"image/svg+xml",
+			file,
+		)
+	})
+
+	router.GET("favicon-96x96.png", func(c *gin.Context) {
+		file, _ := f.ReadFile("assets/favicon-96x96.png")
+		c.Data(
+			http.StatusOK,
+			"image/png",
+			file,
+		)
+	})
 
 	port := os.Getenv("PORT")
 	if port == "" {
