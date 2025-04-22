@@ -80,12 +80,11 @@ var (
 	clientsMutex  sync.RWMutex
 	headpatsMap   map[string]bool
 	headpatsMutex sync.RWMutex
-	headpatCount  int
-	headpatTotal  int
 	broadcasterId string
 	rewardId      string
 	streamId      string
-	memoryStore   store.Store
+	eventStore    store.EventStore
+	sessionStore  store.SessionStore
 )
 
 func newClient() chan HeadpatMessage {
@@ -98,8 +97,6 @@ func newClient() chan HeadpatMessage {
 }
 
 func closeClient(client chan HeadpatMessage) {
-	log.Println("Closing client")
-
 	clientsMutex.Lock()
 	defer clientsMutex.Unlock()
 
@@ -107,15 +104,7 @@ func closeClient(client chan HeadpatMessage) {
 	close(client)
 }
 
-func newHeadpatMessage() HeadpatMessage {
-	return HeadpatMessage{
-		Count:     headpatCount,
-		Total:     headpatTotal,
-		Timestamp: string(time.Now().Format(time.RFC3339Nano)),
-	}
-}
-
-func tryAddHeadpat(event ChannelPointsRedemptionEvent) bool {
+func tryAddHeadpat(event ChannelPointsRedemptionEvent) *store.EventCount {
 	headpatsMutex.Lock()
 	defer headpatsMutex.Unlock()
 
@@ -127,53 +116,22 @@ func tryAddHeadpat(event ChannelPointsRedemptionEvent) bool {
 	timestamp, _ := time.Parse(time.RFC3339Nano, event.RedeemedAt)
 	duration := time.Since(timestamp)
 	if duration > 10*time.Minute {
-		return false
+		return nil
 	}
 
 	// Skip notifications that are not from headpats
 	if !isDev && (event.BroadcasterId != broadcasterId || event.Reward.Id != rewardId) {
-		return false
+		return nil
 	}
 
 	// Skip this headpat if it has already been counted
 	if _, ok := headpatsMap[event.Id]; ok {
-		return false
+		return nil
 	}
 
 	headpatsMap[event.Id] = true
-	headpatCount++
-	headpatTotal++
-	return true
-}
-
-func completeHeadpats(amount int) int {
-	headpatsMutex.Lock()
-	defer headpatsMutex.Unlock()
-
-	if headpatCount > 0 {
-		oldCount := headpatCount
-		if amount == -1 {
-			headpatCount = 0
-			return oldCount
-		}
-
-		if amount > 0 {
-			headpatCount -= amount
-			if headpatCount < 0 {
-				headpatCount = 0
-			}
-			return oldCount - headpatCount
-		}
-	}
-
-	return 0
-}
-
-func sendHeadpats() {
-	message := newHeadpatMessage()
-	for client := range clientsMap {
-		client <- message
-	}
+	count, _ := eventStore.AddPending("headpat")
+	return &count
 }
 
 func verifySignature(messageSignature, messageID, messageTimestamp string, body []byte) bool {
@@ -190,12 +148,21 @@ func handleNotification(notification NotificationPayload) {
 	case "channel.channel_points_custom_reward_redemption.add":
 		var event ChannelPointsRedemptionEvent
 		if err := json.Unmarshal(notification.Event, &event); err != nil {
-			log.Println("Error: Failed to parse event: channel.channel_points_custom_reward_redemption.add")
+			log.Printf("Error: Failed to parse event: channel.channel_points_custom_reward_redemption.add: %s\n", err)
 			break
 		}
 
-		if ok := tryAddHeadpat(event); ok {
-			sendHeadpats()
+		if newCount := tryAddHeadpat(event); newCount != nil {
+			message := HeadpatMessage{
+				Count:     newCount.Pending,
+				Total:     newCount.Total,
+				Timestamp: string(time.Now().Format(time.RFC3339Nano)),
+			}
+			clientsMutex.RLock()
+			for client := range clientsMap {
+				client <- message
+			}
+			clientsMutex.RUnlock()
 		}
 
 	case "stream.online":
@@ -203,7 +170,7 @@ func handleNotification(notification NotificationPayload) {
 
 		var event StreamOnlineEvent
 		if err := json.Unmarshal(notification.Event, &event); err != nil {
-			log.Println("Error: Failed to parse event: stream.online")
+			log.Printf("Error: Failed to parse event 'stream.online': %s\n", err)
 			break
 		}
 
@@ -222,8 +189,7 @@ func handleNotification(notification NotificationPayload) {
 }
 
 func isValidToken(token string) bool {
-	fmt.Println("Token:", token)
-	session, _ := memoryStore.GetSession(token)
+	session, _ := sessionStore.GetSession(token)
 	return session != nil
 }
 
@@ -231,7 +197,6 @@ func authMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		cookie, _ := r.Cookie("AuthToken")
 		isAuth := cookie != nil && isValidToken(cookie.Value)
-		fmt.Println("isAuthenticated:", isAuth)
 		ctx := context.WithValue(r.Context(), "isAuthenticated", isAuth)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
@@ -330,10 +295,6 @@ func lookupUser(accessToken string) (*TwitchUser, error) {
 		return nil, fmt.Errorf("request failed with status: %s", resp.Status)
 	}
 
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("request failed with status: %s", resp.Status)
-	}
-
 	data, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, fmt.Errorf("reading response: %w", err)
@@ -364,25 +325,28 @@ func generateSessionToken() string {
 
 func main() {
 	isDev = os.Getenv("MODE") == "DEV"
+	if isDev {
+		fmt.Println("Starting server in development mode")
+	}
 
 	appClientId = os.Getenv("APP_CLIENT_ID")
 	if appClientId == "" {
-		log.Fatal("Missing client_id")
+		log.Fatal("Missing client_id\n")
 	}
 
 	baseURL = os.Getenv("BASE_URL")
 	if baseURL == "" {
-		log.Fatal("Missing base URL")
+		log.Fatal("Missing base URL\n")
 	}
 
 	broadcasterId = os.Getenv("BROADCASTER_USER_ID")
 	if !isDev && broadcasterId == "" {
-		log.Fatal("Missing broadcaster_user_id")
+		log.Fatal("Missing broadcaster_user_id\n")
 	}
 
 	rewardId = os.Getenv("REWARD_ID")
 	if !isDev && broadcasterId == "" {
-		log.Fatal("Missing reward_id")
+		log.Fatal("Missing reward_id\n")
 	}
 
 	mux := http.NewServeMux()
@@ -433,13 +397,13 @@ func main() {
 
 		tokenResult, err := getToken(code)
 		if tokenResult == nil || err != nil {
-			log.Println("failed to get token:", err)
+			log.Printf("Error: failed to get token: %s\n", err)
 			return
 		}
 
 		user, err := lookupUser(tokenResult.AccessToken)
 		if err != nil {
-			log.Println("failed to lookup user:", err)
+			log.Printf("Error: failed to lookup user: %s\n", err)
 		}
 
 		if !isDev && user.Id != broadcasterId {
@@ -450,9 +414,10 @@ func main() {
 		session := store.Session{
 			Access:  tokenResult.AccessToken,
 			Refresh: tokenResult.RefreshToken,
+			UserId:  user.Id,
 		}
-		if err = memoryStore.SetSession(sessionToken, session); err != nil {
-			log.Println("Error: failed to save session:", err)
+		if err = sessionStore.SetSession(sessionToken, session); err != nil {
+			log.Printf("Error: failed to save session: %s\n", err)
 		}
 
 		cookie := &http.Cookie{
@@ -475,12 +440,23 @@ func main() {
 		}
 	})))
 
-	mux.HandleFunc("/count", func(w http.ResponseWriter, r *http.Request) {
-		message := newHeadpatMessage()
+	mux.HandleFunc("/headpat/count", func(w http.ResponseWriter, r *http.Request) {
+		count, err := eventStore.GetCount("headpat")
+		if err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			fmt.Fprintf(w, "Failed to get headpat count")
+			log.Printf("Error: Failed to get headpat count: %s", err)
+			return
+		}
+		message := HeadpatMessage{
+			Count:     count.Pending,
+			Total:     count.Total,
+			Timestamp: string(time.Now().Format(time.RFC3339Nano)),
+		}
 		json.NewEncoder(w).Encode(message)
 	})
 
-	mux.Handle("POST /complete-headpats", authMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	mux.Handle("POST /headpat/fulfill", authMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		hasAuth := r.Context().Value("isAuthenticated").(bool)
 		if !hasAuth {
 			w.WriteHeader(http.StatusUnauthorized)
@@ -494,27 +470,44 @@ func main() {
 		body, err := io.ReadAll(r.Body)
 		if err != nil {
 			w.WriteHeader(http.StatusInternalServerError)
-			fmt.Fprintf(w, "Error: Failed to read request")
-			log.Printf("Error: Failed to read request at '/complete-headpats'")
+			fmt.Fprintf(w, "Failed to read request")
+			log.Printf("Error: Failed to read request: %s\n", err)
 			return
 		}
 
 		var req RequestBody
 		if err = json.Unmarshal(body, &req); err != nil {
 			w.WriteHeader(http.StatusBadRequest)
-			fmt.Fprintf(w, "Error: Bad request")
-			log.Println("Error: Failed to parse complete-headpats payload")
+			fmt.Fprintf(w, "Bad request")
+			log.Printf("Error: Failed to parse payload: %s\n", err)
 			return
 		}
 
-		completedCount := completeHeadpats(req.Amount)
-		if completedCount > 0 {
-			sendHeadpats()
-			log.Printf("%d headpats completed!\n", completedCount)
+		count, err := eventStore.Fulfill("headpat", req.Amount)
+		if err == store.NoChange {
+			w.WriteHeader(http.StatusNoContent)
+			return
 		}
+		if err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			log.Printf("Error: Failed to fulfill headpats: %s\n", err)
+			return
+		}
+
+		message := HeadpatMessage{
+			Count:     count.Pending,
+			Total:     count.Total,
+			Timestamp: string(time.Now().Format(time.RFC3339Nano)),
+		}
+
+		clientsMutex.RLock()
+		for client := range clientsMap {
+			client <- message
+		}
+		clientsMutex.RUnlock()
 	})))
 
-	mux.HandleFunc("/events", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/headpat/events", func(w http.ResponseWriter, r *http.Request) {
 		client := newClient()
 		defer closeClient(client)
 
@@ -541,8 +534,8 @@ func main() {
 		body, err := io.ReadAll(r.Body)
 		if err != nil {
 			w.WriteHeader(http.StatusInternalServerError)
-			fmt.Fprintf(w, "Error: Failed to read request")
-			log.Printf("Error: Failed to read request at '/notification'")
+			fmt.Fprintf(w, "Failed to read request")
+			log.Printf("Error: Failed to read request: %s\n", err)
 			return
 		}
 
@@ -564,8 +557,8 @@ func main() {
 			var message NotificationPayload
 			if err = json.Unmarshal(body, &message); err != nil {
 				w.WriteHeader(http.StatusInternalServerError)
-				fmt.Fprintf(w, "Error: Failed to parse JSON")
-				log.Println("Error: Failed to parse webhook notifiation payload")
+				fmt.Fprintf(w, "Failed to parse JSON")
+				log.Printf("Error: Failed to parse webhook notifiation payload: %s\n", err)
 				break
 			}
 			w.WriteHeader(http.StatusNoContent)
@@ -581,8 +574,8 @@ func main() {
 			var message VerificationPayload
 			if err = json.Unmarshal(body, &message); err != nil {
 				w.WriteHeader(http.StatusInternalServerError)
-				fmt.Fprintf(w, "Error: Failed to parse JSON")
-				log.Println("Error: Failed to parse webhook verification payload")
+				fmt.Fprintf(w, "Failed to parse JSON")
+				log.Printf("Error: Failed to parse webhook verification payload: %s\n", err)
 				break
 			}
 
@@ -600,8 +593,8 @@ func main() {
 			var message RevocationPayload
 			if err = json.Unmarshal(body, &message); err != nil {
 				w.WriteHeader(http.StatusInternalServerError)
-				fmt.Fprintf(w, "Error: Failed to parse JSON")
-				log.Println("Error: Failed to parse webhook revocation payload")
+				fmt.Fprintf(w, "Failed to parse JSON")
+				log.Printf("Error: Failed to parse webhook revocation payload: %s\n", err)
 				break
 			}
 
@@ -614,9 +607,12 @@ func main() {
 	headpatsMap = make(map[string]bool, 100)
 
 	if isDev {
-		memoryStore = store.NewMemoryStore()
+		eventStore = store.NewInMemoryEventStore()
+		sessionStore = store.NewInMemorySessionStore()
 	} else {
-		memoryStore = store.NewRedisStore("localhost:6379")
+		redisStore := store.NewRedisStore()
+		eventStore = redisStore
+		sessionStore = redisStore
 	}
 
 	port := os.Getenv("PORT")

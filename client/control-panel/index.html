@@ -113,12 +113,12 @@
             }
 
             async function getCount() {
-                const response = await fetch("/count");
+                const response = await fetch("/headpat/count");
                 data = await response.json();
                 update(data);
             }
 
-            const eventSource = new EventSource("/events");
+            const eventSource = new EventSource("/headpat/events");
             eventSource.onerror = (e) => console.log("ES error", e);
             eventSource.onmessage = (event) => {
                 const data = JSON.parse(event.data);
@@ -128,7 +128,7 @@
             async function completeHeadpats(amount) {
                 if (!Number.isInteger(amount)) return;
                 if (amount < -1 || amount == 0) return;
-                const response = await fetch("/complete-headpats", {
+                const response = await fetch("/headpat/fulfill", {
                     method: "POST",
                     headers: {
                         "Content-Type": "application/json",

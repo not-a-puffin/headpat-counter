@@ -1,14 +1,20 @@
 package store
 
 import (
+	"encoding/json"
+	"fmt"
 	"sync"
+	"time"
 
 	"github.com/go-redis/redis"
 )
 
+const sessionLifetime time.Duration = 24 * 60 * time.Hour
+
 type Session struct {
-	Access  string
-	Refresh string
+	Access  string `json:"access"`
+	Refresh string `json:"refresh"`
+	UserId  string `json:"user_id"`
 }
 
 type SessionStore interface {
@@ -17,101 +23,238 @@ type SessionStore interface {
 	DeleteSession(token string) error
 }
 
-type Count struct {
-	Total       int
-	Unfulfilled int
+type EventCount struct {
+	Total   int
+	Pending int
 }
 
-type CounterStore interface {
-	LoadCount() (Count, error)
-	SaveCount(value Count) error
+type EventStore interface {
+	AddPending(eventName string) (EventCount, error)
+	GetCount(eventName string) (EventCount, error)
+	Fulfill(eventName string, number int) (EventCount, error)
 }
 
-type Store interface {
-	CounterStore
-	SessionStore
+type EventStoreError string
+
+const NoChange = EventStoreError("event-store: no change")
+
+func (e EventStoreError) Error() string { return string(e) }
+
+type inMemorySessionStore struct {
+	mutex    sync.RWMutex
+	sessions map[string]Session
 }
 
-type memoryStore struct {
-	mutex            sync.RWMutex
-	sessions         map[string]Session
-	totalCount       int
-	unfulfilledCount int
+func NewInMemorySessionStore() SessionStore {
+	return &inMemorySessionStore{
+		sessions: make(map[string]Session),
+	}
 }
 
-func (s *memoryStore) SetSession(token string, session Session) error {
+func (s *inMemorySessionStore) SetSession(token string, session Session) error {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
-	s.sessions[token] = session
+	key := "session:" + token
+	s.sessions[key] = session
 	return nil
 }
 
-func (s *memoryStore) GetSession(token string) (*Session, error) {
+func (s *inMemorySessionStore) GetSession(token string) (*Session, error) {
 	s.mutex.RLock()
 	defer s.mutex.RUnlock()
-	session, ok := s.sessions[token]
+	key := "session:" + token
+	session, ok := s.sessions[key]
 	if !ok {
 		return nil, nil
 	}
 	return &session, nil
 }
 
-func (s *memoryStore) DeleteSession(token string) error {
-	s.mutex.RLock()
-	defer s.mutex.RUnlock()
-	delete(s.sessions, token)
+func (s *inMemorySessionStore) DeleteSession(token string) error {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+	key := "session:" + token
+	delete(s.sessions, key)
 	return nil
 }
 
-func (s *memoryStore) LoadCount() (Count, error) {
-	count := Count{
-		Total:       s.totalCount,
-		Unfulfilled: s.unfulfilledCount,
+type inMemoryEventStore struct {
+	mutex  sync.RWMutex
+	events map[string]EventCount
+}
+
+func NewInMemoryEventStore() EventStore {
+	return &inMemoryEventStore{
+		events: make(map[string]EventCount),
 	}
+}
+
+func (s *inMemoryEventStore) AddPending(eventName string) (EventCount, error) {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+	count := s.events[eventName]
+	count.Pending++
+	count.Total++
+	s.events[eventName] = count
 	return count, nil
 }
 
-func (s *memoryStore) SaveCount(count Count) error {
-	s.totalCount = count.Total
-	s.unfulfilledCount = count.Unfulfilled
-	return nil
+func (s *inMemoryEventStore) GetCount(eventName string) (EventCount, error) {
+	s.mutex.RLock()
+	defer s.mutex.RUnlock()
+	count := s.events[eventName]
+	return count, nil
 }
 
-func NewMemoryStore() Store {
-	return &memoryStore{
-		sessions: make(map[string]Session),
+func (s *inMemoryEventStore) Fulfill(eventName string, number int) (EventCount, error) {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+	count := s.events[eventName]
+
+	var numFulfilled int
+	if number == -1 {
+		numFulfilled = count.Pending
+	} else {
+		numFulfilled = max(min(count.Pending, number), 0)
 	}
+
+	if numFulfilled == 0 {
+		return EventCount{}, NoChange
+	}
+
+	count.Pending -= numFulfilled
+	s.events[eventName] = count
+	return count, nil
+}
+
+type redisSessionStore struct {
+	client *redis.Client
 }
 
 type redisStore struct {
 	client *redis.Client
 }
 
-// DeleteSession implements Store.
-func (r redisStore) DeleteSession(token string) error {
-	panic("unimplemented")
+type MultiStore interface {
+	SessionStore
+	EventStore
 }
 
-// GetSession implements Store.
-func (r redisStore) GetSession(token string) (*Session, error) {
-	panic("unimplemented")
+func NewRedisStore() MultiStore {
+	rdb := redis.NewClient(&redis.Options{
+		Addr: "localhost:6379",
+	})
+	return &redisStore{
+		client: rdb,
+	}
 }
 
-// LoadCount implements Store.
-func (r redisStore) LoadCount() (Count, error) {
-	panic("unimplemented")
+func (s redisStore) GetSession(token string) (*Session, error) {
+	key := "session:" + token
+	data, err := s.client.Get(key).Bytes()
+	if err == redis.Nil {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var session Session
+	if err := json.Unmarshal(data, &session); err != nil {
+		return nil, fmt.Errorf("unmarshal session: %w", err)
+	}
+	return &session, nil
 }
 
-// SaveCount implements Store.
-func (r redisStore) SaveCount(value Count) error {
-	panic("unimplemented")
+func (s redisStore) SetSession(token string, session Session) error {
+	bytes, err := json.Marshal(session)
+	if err != nil {
+		return err
+	}
+
+	key := "session:" + token
+	return s.client.Set(key, bytes, sessionLifetime).Err()
 }
 
-// SetSession implements Store.
-func (r redisStore) SetSession(token string, session Session) error {
-	panic("unimplemented")
+func (s redisStore) DeleteSession(token string) error {
+	key := "session:" + token
+	return s.client.Del(key).Err()
 }
 
-func NewRedisStore(addr string) Store {
-	return redisStore{}
+func (s *redisStore) AddPending(eventName string) (EventCount, error) {
+	pendingKey := eventName + ":pending"
+	totalKey := eventName + ":total"
+	var pendingCmd, totalCmd *redis.IntCmd
+
+	err := s.client.Watch(func(tx *redis.Tx) error {
+		_, err := tx.TxPipelined(func(pipe redis.Pipeliner) error {
+			pendingCmd = pipe.Incr(pendingKey)
+			totalCmd = pipe.Incr(totalKey)
+			return nil
+		})
+		return err
+	}, pendingKey, totalKey)
+
+	if err != nil {
+		return EventCount{}, err
+	}
+
+	count := EventCount{
+		Pending: int(pendingCmd.Val()),
+		Total:   int(totalCmd.Val()),
+	}
+	return count, nil
+}
+
+func (s *redisStore) Fulfill(eventName string, number int) (EventCount, error) {
+	pendingKey := eventName + ":pending"
+	pending, err := s.client.Get(pendingKey).Int()
+	if err != nil && err != redis.Nil {
+		return EventCount{}, err
+	}
+
+	totalKey := eventName + ":total"
+	total, err := s.client.Get(totalKey).Int()
+	if err != nil && err != redis.Nil {
+		return EventCount{}, err
+	}
+
+	var numFulfilled int
+	if number == -1 {
+		numFulfilled = pending
+	} else {
+		numFulfilled = max(min(pending, number), 0)
+	}
+
+	if numFulfilled == 0 {
+		return EventCount{}, NoChange
+	}
+
+	val, err := s.client.DecrBy(pendingKey, int64(numFulfilled)).Result()
+	if err != nil {
+		return EventCount{}, err
+	}
+
+	count := EventCount{
+		Pending: int(val),
+		Total:   total,
+	}
+	return count, nil
+}
+
+func (s *redisStore) GetCount(eventName string) (EventCount, error) {
+	pending, err := s.client.Get(eventName + ":pending").Int()
+	if err != nil && err != redis.Nil {
+		return EventCount{}, err
+	}
+
+	total, err := s.client.Get(eventName + ":total").Int()
+	if err != nil && err != redis.Nil {
+		return EventCount{}, err
+	}
+
+	count := EventCount{
+		Pending: pending,
+		Total:   total,
+	}
+	return count, nil
 }

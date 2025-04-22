@@ -103,9 +103,7 @@
         </div>
 
         <script>
-            const eventUrl = "https://" + window.location.host + "/events";
-            const eventSource = new EventSource(eventUrl);
-
+            const eventSource = new EventSource("/headpat/events");
             const overlay = document.getElementById("overlay");
             const countEl = document.getElementById("count");
             const totalEl = document.getElementById("total");
@@ -126,8 +124,7 @@
             }
 
             async function getCount() {
-                const countUrl = "https://" + window.location.host + "/count";
-                const response = await fetch(countUrl);
+                const response = await fetch("/headpat/count");
                 data = await response.json();
                 update(data);
                 overlay.classList.add("active");
