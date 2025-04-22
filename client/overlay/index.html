@@ -5,15 +5,17 @@
         <link rel="icon" type="image/png" href="/favicon-96x96.png" sizes="96x96" />
         <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
         <link rel="shortcut icon" href="/favicon.ico" />
+        <link rel="preconnect" href="https://fonts.googleapis.com" />
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+        <link href="https://fonts.googleapis.com/css2?family=Sniglet&display=swap" rel="stylesheet" />
         <style>
-            @import url("https://fonts.googleapis.com/css2?family=Sniglet&display=swap");
-
             body {
                 color: white;
                 background-color: #1e0c35;
                 font-family: "Sniglet";
-                font-weight: 800;
+                font-weight: 400;
                 font-size: 24px;
+                font-style: normal;
             }
             #overlay {
                 opacity: 0;
@@ -53,9 +55,7 @@
                     -1px -1px black;
                 @supports (-moz-appearance: none) {
                     text-shadow: none;
-                    filter: drop-shadow(0.4px 0.4px black)
-                        drop-shadow(-0.4px 0.4px black)
-                        drop-shadow(0.4px -0.4px black)
+                    filter: drop-shadow(0.4px 0.4px black) drop-shadow(-0.4px 0.4px black) drop-shadow(0.4px -0.4px black)
                         drop-shadow(-0.4px -0.4px black);
                 }
             }

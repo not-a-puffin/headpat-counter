@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="en">
+    <head>
+        <title>Headpats Login</title>
+        <link rel="icon" type="image/png" href="/favicon-96x96.png" sizes="96x96" />
+        <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+        <link rel="shortcut icon" href="/favicon.ico" />
+        <link rel="preconnect" href="https://fonts.googleapis.com" />
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+        <link href="https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,100..1000&display=swap" rel="stylesheet" />
+        <style>
+            body {
+                color: white;
+                background: #0e0e10;
+                font-family: "DM Sans", sans-serif;
+                font-optical-sizing: auto;
+                font-size: 14px;
+                font-style: normal;
+            }
+            main {
+                display: flex;
+                flex-direction: column;
+                width: 320px;
+                margin: 0 auto;
+                margin-top: 24px;
+            }
+            h1 {
+                font-size: 24px;
+                margin-bottom: 8px;
+                text-align: center;
+            }
+            p {
+                margin: 8px 0;
+            }
+            button {
+                background-color: #006699;
+                color: white;
+                padding: 6px 16px;
+                margin-top: 12px;
+                border-radius: 4px;
+                border: none;
+                cursor: pointer;
+                font-family: inherit;
+                font-weight: bold;
+                line-height: normal;
+                transition:
+                    background-color 0.2s ease,
+                    transform 0.1s ease;
+                &:hover {
+                    background-color: #00557a;
+                }
+                &:active {
+                    transform: scale(0.98);
+                    background-color: #004466;
+                }
+            }
+            .card {
+                position: relative;
+                display: flex;
+                flex-direction: column;
+                border: 1px solid #303032;
+                border-radius: 6px;
+                background: #18181b;
+                margin: 0;
+                padding: 8px;
+            }
+        </style>
+    </head>
+    <body>
+        <main>
+            <h1>Login</h1>
+
+            <div class="card">
+                <p>Headpat Counter needs permission to read channel point redemptions on your channel.</p>
+                <p>Use the button to sign in to Twitch and grant the required permissions.</p>
+                <button onclick="window.location.href='/auth/connect'">Connect Twitch Account</button>
+            </div>
+        </main>
+    </body>
+</html>

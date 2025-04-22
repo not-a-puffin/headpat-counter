@@ -1,0 +1,143 @@
+<!doctype html>
+<html lang="en">
+    <head>
+        <title>Headpats Control Panel</title>
+        <link rel="icon" type="image/png" href="/favicon-96x96.png" sizes="96x96" />
+        <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+        <link rel="shortcut icon" href="/favicon.ico" />
+        <link rel="preconnect" href="https://fonts.googleapis.com" />
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+        <link href="https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,100..1000&display=swap" rel="stylesheet" />
+        <style>
+            body {
+                color: white;
+                background: #0e0e10;
+                font-family: "DM Sans", sans-serif;
+                font-optical-sizing: auto;
+                font-size: 14px;
+                font-style: normal;
+            }
+            main {
+                display: flex;
+                flex-direction: column;
+                width: 320px;
+                margin: 0 auto;
+                margin-top: 24px;
+            }
+            h1 {
+                font-size: 24px;
+                margin-bottom: 8px;
+                text-align: center;
+            }
+            p {
+                margin: 8px 0;
+            }
+            input {
+                background: #42424a;
+                border: none;
+                border-radius: 4px;
+                color: #dedee3;
+                padding: 4px 8px;
+            }
+            button {
+                background-color: #0f766e;
+                color: white;
+                padding: 6px 16px;
+                margin-top: 12px;
+                border-radius: 4px;
+                border: none;
+                cursor: pointer;
+                font-family: inherit;
+                font-weight: bold;
+                line-height: normal;
+                transition:
+                    background-color 0.2s ease,
+                    transform 0.1s ease;
+                &:hover {
+                    background-color: #115e59;
+                }
+                &:active {
+                    transform: scale(0.98);
+                    background-color: #134e4a;
+                }
+            }
+            .card {
+                position: relative;
+                display: flex;
+                flex-direction: column;
+                border: 1px solid #303032;
+                border-radius: 6px;
+                background: #18181b;
+                margin: 0;
+                padding: 8px;
+            }
+            .row {
+                display: flex;
+                flex-direction: row;
+                align-items: baseline;
+            }
+        </style>
+    </head>
+    <body>
+        <main>
+            <h1>Headpats</h1>
+
+            <div class="card">
+                <p><span id="count"></span> headpats redeemed!</p>
+
+                <div class="row">
+                    <button onclick="completeHeadpats(parseInt(inputEl.value))">Complete</button>
+                    <input id="amount" inputmode="numeric" value="1" style="margin-left: 4px" />
+                </div>
+
+                <div class="row">
+                    <button onclick="completeHeadpats(-1)">Head has been thoroughly patted!</button>
+                </div>
+            </div>
+        </main>
+
+        <script>
+            const countEl = document.getElementById("count");
+            const inputEl = document.getElementById("amount");
+            let mostRecentTimestamp = new Date(0);
+
+            function update(data) {
+                const timestamp = new Date(data.timestamp);
+                if (timestamp <= mostRecentTimestamp) return;
+                mostRecentTimestamp = timestamp;
+
+                const count = parseInt(data.count);
+                const total = parseInt(data.total);
+                if (isNaN(count) || isNaN(total)) return;
+                countEl.innerHTML = data.count;
+            }
+
+            async function getCount() {
+                const response = await fetch("/count");
+                data = await response.json();
+                update(data);
+            }
+
+            const eventSource = new EventSource("/events");
+            eventSource.onerror = (e) => console.log("ES error", e);
+            eventSource.onmessage = (event) => {
+                const data = JSON.parse(event.data);
+                update(data);
+            };
+
+            async function completeHeadpats(amount) {
+                if (!Number.isInteger(amount)) return;
+                if (amount < -1 || amount == 0) return;
+                const response = await fetch("/complete-headpats", {
+                    method: "POST",
+                    headers: {
+                        "Content-Type": "application/json",
+                    },
+                    body: JSON.stringify({ amount }),
+                });
+                if (response.ok) inputEl.value = "1";
+            }
+            getCount();
+        </script>
+    </body>
+</html>
