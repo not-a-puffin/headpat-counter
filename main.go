@@ -289,6 +289,8 @@ func generateSessionToken() string {
 	return token
 }
 
+const keepaliveDuration time.Duration = 30 * time.Second
+
 func main() {
 	isDev = os.Getenv("MODE") == "DEV"
 	if isDev {
@@ -483,12 +485,18 @@ func main() {
 		w.Header().Set("X-Accel-Buffering", "no")
 
 		flusher, _ := w.(http.Flusher)
+		keepalive := time.NewTicker(keepaliveDuration)
+		defer keepalive.Stop()
 
 		for {
 			select {
 			case message := <-client:
 				data, _ := json.Marshal(message)
 				fmt.Fprintf(w, "data: %s\n\n", data)
+				flusher.Flush()
+				keepalive.Reset(keepaliveDuration)
+			case <-keepalive.C:
+				fmt.Fprint(w, ":\n\n")
 				flusher.Flush()
 			case <-r.Context().Done():
 				return
