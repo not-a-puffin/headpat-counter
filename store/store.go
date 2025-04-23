@@ -207,9 +207,9 @@ func (s redisStore) ContainsSession(token string) bool {
 }
 
 func (s *redisStore) AddPending(eventName, id string) (EventCount, error) {
-	pendingKey := eventName + ":pending"
-	totalKey := eventName + ":total"
-	idKey := eventName + ":id:" + id
+	pendingKey := "event:" + eventName + ":pending"
+	totalKey := "event:" + eventName + ":total"
+	idKey := "event:" + eventName + ":id:" + id
 	var pendingCmd, totalCmd *redis.IntCmd
 
 	err := s.client.Watch(func(tx *redis.Tx) error {
@@ -234,19 +234,19 @@ func (s *redisStore) AddPending(eventName, id string) (EventCount, error) {
 }
 
 func (s *redisStore) ContainsEvent(eventName, id string) bool {
-	idKey := eventName + ":id:" + id
+	idKey := "event:" + eventName + ":id:" + id
 	count := s.client.Exists(idKey).Val()
 	return count > 0
 }
 
 func (s *redisStore) Fulfill(eventName string, number int) (EventCount, error) {
-	pendingKey := eventName + ":pending"
+	pendingKey := "event:" + eventName + ":pending"
 	pending, err := s.client.Get(pendingKey).Int()
 	if err != nil && err != redis.Nil {
 		return EventCount{}, err
 	}
 
-	totalKey := eventName + ":total"
+	totalKey := "event:" + eventName + ":total"
 	total, err := s.client.Get(totalKey).Int()
 	if err != nil && err != redis.Nil {
 		return EventCount{}, err
@@ -276,12 +276,14 @@ func (s *redisStore) Fulfill(eventName string, number int) (EventCount, error) {
 }
 
 func (s *redisStore) GetCount(eventName string) (EventCount, error) {
-	pending, err := s.client.Get(eventName + ":pending").Int()
+	pendingKey := "event:" + eventName + ":pending"
+	pending, err := s.client.Get(pendingKey).Int()
 	if err != nil && err != redis.Nil {
 		return EventCount{}, err
 	}
 
-	total, err := s.client.Get(eventName + ":total").Int()
+	totalKey := "event:" + eventName + ":total"
+	total, err := s.client.Get(totalKey).Int()
 	if err != nil && err != redis.Nil {
 		return EventCount{}, err
 	}
