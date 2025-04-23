@@ -159,13 +159,24 @@ func handleNotification(notification NotificationPayload) {
 	}
 }
 
+type contextKey int
+
+const (
+	contextKeyAuth contextKey = iota + 1
+)
+
 func authMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		cookie, _ := r.Cookie("AuthToken")
-		isAuth := cookie != nil && sessionStore.ContainsSession(cookie.Value)
-		ctx := context.WithValue(r.Context(), "isAuthenticated", isAuth)
+		hasActiveSession := cookie != nil && sessionStore.ContainsSession(cookie.Value)
+		ctx := context.WithValue(r.Context(), contextKeyAuth, hasActiveSession)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
+}
+
+func hasAuth(r *http.Request) bool {
+	auth, ok := r.Context().Value(contextKeyAuth).(bool)
+	return ok && auth
 }
 
 type OauthTokenResult struct {
@@ -326,8 +337,7 @@ func main() {
 	mux.Handle("/favicon-96x96.png", fs)
 
 	mux.Handle("/", authMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		hasAuth := r.Context().Value("isAuthenticated").(bool)
-		if hasAuth {
+		if hasAuth(r) {
 			http.Redirect(w, r, "/control-panel/", http.StatusSeeOther)
 		} else {
 			http.Redirect(w, r, "/auth/", http.StatusSeeOther)
@@ -335,8 +345,7 @@ func main() {
 	})))
 
 	mux.Handle("/auth/", authMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		hasAuth := r.Context().Value("isAuthenticated").(bool)
-		if hasAuth {
+		if hasAuth(r) {
 			http.Redirect(w, r, "/control-panel/", http.StatusSeeOther)
 		} else {
 			http.ServeFile(w, r, "client/auth")
@@ -400,8 +409,7 @@ func main() {
 	})
 
 	mux.Handle("/control-panel/", authMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		hasAuth := r.Context().Value("isAuthenticated").(bool)
-		if hasAuth {
+		if hasAuth(r) {
 			http.ServeFile(w, r, "client/control-panel")
 		} else {
 			http.Redirect(w, r, "/auth/", http.StatusSeeOther)
@@ -425,9 +433,9 @@ func main() {
 	})
 
 	mux.Handle("POST /headpat/fulfill", authMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		hasAuth := r.Context().Value("isAuthenticated").(bool)
-		if !hasAuth {
+		if !hasAuth(r) {
 			w.WriteHeader(http.StatusUnauthorized)
+			fmt.Fprintf(w, "Unauthorized")
 			return
 		}
 
@@ -561,8 +569,6 @@ func main() {
 			type RevocationPayload struct {
 				Subscription Subscription `json:"subscription"`
 			}
-
-			w.WriteHeader(http.StatusNoContent)
 
 			var message RevocationPayload
 			if err = json.Unmarshal(body, &message); err != nil {
