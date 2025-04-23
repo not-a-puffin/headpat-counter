@@ -476,6 +476,8 @@ func main() {
 			Timestamp: string(time.Now().Format(time.RFC3339Nano)),
 		}
 
+		json.NewEncoder(w).Encode(message)
+
 		clientsMutex.RLock()
 		for client := range clientsMap {
 			client <- message
