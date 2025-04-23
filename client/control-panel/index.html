@@ -139,8 +139,10 @@
                 });
                 if (response.ok) {
                     inputEl.value = "1";
-                    data = await response.json();
-                    update(data);
+                    if (response.status == 200) {
+                        data = await response.json();
+                        update(data);
+                    }
                 }
             }
             getCount();
