@@ -165,9 +165,11 @@ const (
 	contextKeyAuth contextKey = iota + 1
 )
 
+const tokenName string = "green_haired_catgirl_token"
+
 func authMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		cookie, _ := r.Cookie("AuthToken")
+		cookie, _ := r.Cookie(tokenName)
 		hasActiveSession := cookie != nil && sessionStore.ContainsSession(cookie.Value)
 		ctx := context.WithValue(r.Context(), contextKeyAuth, hasActiveSession)
 		next.ServeHTTP(w, r.WithContext(ctx))
@@ -398,7 +400,7 @@ func main() {
 		}
 
 		cookie := &http.Cookie{
-			Name:     "AuthToken",
+			Name:     tokenName,
 			Value:    sessionToken,
 			Path:     "/",
 			HttpOnly: true,
