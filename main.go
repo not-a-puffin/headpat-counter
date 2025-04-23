@@ -47,15 +47,6 @@ type ChannelPointsRedemptionEvent struct {
 	RedeemedAt       string `json:"redeemed_at"`
 }
 
-type StreamOnlineEvent struct {
-	Id               string `json:"id"`
-	BroadcasterId    string `json:"broadcaster_user_id"`
-	BroadcasterLogin string `json:"broadcaster_user_login"`
-	BroadcasterName  string `json:"broadcaster_user_name"`
-	StartedAt        string `json:"started_at"`
-	Type             string `json:"type"`
-}
-
 type Subscription struct {
 	Id        string          `json:"id"`
 	Type      string          `json:"type"`
@@ -78,11 +69,8 @@ var (
 	baseURL       string
 	clientsMap    map[chan HeadpatMessage]bool
 	clientsMutex  sync.RWMutex
-	headpatsMap   map[string]bool
-	headpatsMutex sync.RWMutex
 	broadcasterId string
 	rewardId      string
-	streamId      string
 	eventStore    store.EventStore
 	sessionStore  store.SessionStore
 )
@@ -104,34 +92,25 @@ func closeClient(client chan HeadpatMessage) {
 	close(client)
 }
 
-func tryAddHeadpat(event ChannelPointsRedemptionEvent) *store.EventCount {
-	headpatsMutex.Lock()
-	defer headpatsMutex.Unlock()
-
-	// if streamId == "" {
-	// 	return false
-	// }
-
+func shouldAddHeadpat(event ChannelPointsRedemptionEvent) bool {
 	// Skip notifications that are older than 10 minutes
 	timestamp, _ := time.Parse(time.RFC3339Nano, event.RedeemedAt)
 	duration := time.Since(timestamp)
 	if duration > 10*time.Minute {
-		return nil
+		return false
 	}
 
 	// Skip notifications that are not from headpats
 	if !isDev && (event.BroadcasterId != broadcasterId || event.Reward.Id != rewardId) {
-		return nil
+		return false
 	}
 
 	// Skip this headpat if it has already been counted
-	if _, ok := headpatsMap[event.Id]; ok {
-		return nil
+	if eventStore.ContainsEvent("headpat", event.Id) {
+		return false
 	}
 
-	headpatsMap[event.Id] = true
-	count, _ := eventStore.AddPending("headpat")
-	return &count
+	return true
 }
 
 func verifySignature(messageSignature, messageID, messageTimestamp string, body []byte) bool {
@@ -152,12 +131,19 @@ func handleNotification(notification NotificationPayload) {
 			break
 		}
 
-		if newCount := tryAddHeadpat(event); newCount != nil {
+		if shouldAddHeadpat(event) {
+			newCount, err := eventStore.AddPending("headpat", event.Id)
+			if err != nil {
+				log.Printf("Error: Failed to add headpat event: %s\n", err)
+				break
+			}
+
 			message := HeadpatMessage{
 				Count:     newCount.Pending,
 				Total:     newCount.Total,
 				Timestamp: string(time.Now().Format(time.RFC3339Nano)),
 			}
+
 			clientsMutex.RLock()
 			for client := range clientsMap {
 				client <- message
@@ -168,35 +154,15 @@ func handleNotification(notification NotificationPayload) {
 	case "stream.online":
 		log.Println("Stream online")
 
-		var event StreamOnlineEvent
-		if err := json.Unmarshal(notification.Event, &event); err != nil {
-			log.Printf("Error: Failed to parse event 'stream.online': %s\n", err)
-			break
-		}
-
-		headpatsMutex.Lock()
-		streamId = event.Id
-		headpatsMutex.Unlock()
-
 	case "stream.offline":
 		log.Println("Stream offline")
-
-		headpatsMutex.Lock()
-		streamId = ""
-		clear(headpatsMap)
-		headpatsMutex.Unlock()
 	}
-}
-
-func isValidToken(token string) bool {
-	session, _ := sessionStore.GetSession(token)
-	return session != nil
 }
 
 func authMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		cookie, _ := r.Cookie("AuthToken")
-		isAuth := cookie != nil && isValidToken(cookie.Value)
+		isAuth := cookie != nil && sessionStore.ContainsSession(cookie.Value)
 		ctx := context.WithValue(r.Context(), "isAuthenticated", isAuth)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
@@ -603,8 +569,7 @@ func main() {
 		}
 	})
 
-	clientsMap = make(map[chan HeadpatMessage]bool, 1)
-	headpatsMap = make(map[string]bool, 100)
+	clientsMap = make(map[chan HeadpatMessage]bool, 2)
 
 	if isDev {
 		eventStore = store.NewInMemoryEventStore()

@@ -21,6 +21,7 @@ type SessionStore interface {
 	SetSession(token string, session Session) error
 	GetSession(token string) (*Session, error)
 	DeleteSession(token string) error
+	ContainsSession(token string) bool
 }
 
 type EventCount struct {
@@ -29,7 +30,8 @@ type EventCount struct {
 }
 
 type EventStore interface {
-	AddPending(eventName string) (EventCount, error)
+	AddPending(eventName, id string) (EventCount, error)
+	ContainsEvent(eventName, id string) bool
 	GetCount(eventName string) (EventCount, error)
 	Fulfill(eventName string, number int) (EventCount, error)
 }
@@ -78,25 +80,43 @@ func (s *inMemorySessionStore) DeleteSession(token string) error {
 	return nil
 }
 
+func (s *inMemorySessionStore) ContainsSession(token string) bool {
+	s.mutex.RLock()
+	defer s.mutex.RUnlock()
+	key := "session:" + token
+	_, ok := s.sessions[key]
+	return ok
+}
+
 type inMemoryEventStore struct {
 	mutex  sync.RWMutex
 	events map[string]EventCount
+	ids    map[string]bool
 }
 
 func NewInMemoryEventStore() EventStore {
 	return &inMemoryEventStore{
 		events: make(map[string]EventCount),
+		ids:    make(map[string]bool),
 	}
 }
 
-func (s *inMemoryEventStore) AddPending(eventName string) (EventCount, error) {
+func (s *inMemoryEventStore) AddPending(eventName, id string) (EventCount, error) {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
 	count := s.events[eventName]
 	count.Pending++
 	count.Total++
 	s.events[eventName] = count
+	s.ids[eventName+":id:"+id] = true
 	return count, nil
+}
+
+func (s *inMemoryEventStore) ContainsEvent(eventName, id string) bool {
+	s.mutex.RLock()
+	defer s.mutex.RUnlock()
+	_, ok := s.ids[eventName+":id:"+id]
+	return ok
 }
 
 func (s *inMemoryEventStore) GetCount(eventName string) (EventCount, error) {
@@ -180,19 +200,27 @@ func (s redisStore) DeleteSession(token string) error {
 	return s.client.Del(key).Err()
 }
 
-func (s *redisStore) AddPending(eventName string) (EventCount, error) {
+func (s redisStore) ContainsSession(token string) bool {
+	key := "session:" + token
+	count := s.client.Exists(key).Val()
+	return count > 0
+}
+
+func (s *redisStore) AddPending(eventName, id string) (EventCount, error) {
 	pendingKey := eventName + ":pending"
 	totalKey := eventName + ":total"
+	idKey := eventName + ":id:" + id
 	var pendingCmd, totalCmd *redis.IntCmd
 
 	err := s.client.Watch(func(tx *redis.Tx) error {
 		_, err := tx.TxPipelined(func(pipe redis.Pipeliner) error {
 			pendingCmd = pipe.Incr(pendingKey)
 			totalCmd = pipe.Incr(totalKey)
+			pipe.Set(idKey, "", 24*time.Hour)
 			return nil
 		})
 		return err
-	}, pendingKey, totalKey)
+	}, pendingKey, totalKey, idKey)
 
 	if err != nil {
 		return EventCount{}, err
@@ -203,6 +231,12 @@ func (s *redisStore) AddPending(eventName string) (EventCount, error) {
 		Total:   int(totalCmd.Val()),
 	}
 	return count, nil
+}
+
+func (s *redisStore) ContainsEvent(eventName, id string) bool {
+	idKey := eventName + ":id:" + id
+	count := s.client.Exists(idKey).Val()
+	return count > 0
 }
 
 func (s *redisStore) Fulfill(eventName string, number int) (EventCount, error) {
