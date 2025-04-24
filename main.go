@@ -383,10 +383,12 @@ func main() {
 		user, err := lookupUser(tokenResult.AccessToken)
 		if err != nil {
 			log.Printf("Error: failed to lookup user: %s\n", err)
+			return
 		}
 
 		if !isDev && user.Id != broadcasterId {
 			log.Println("Error: user is not girl_dm_")
+			return
 		}
 
 		sessionToken := generateSessionToken()
