@@ -435,6 +435,7 @@ func main() {
 			Total:     count.Total,
 			Timestamp: string(time.Now().Format(time.RFC3339Nano)),
 		}
+		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(message)
 	})
 
@@ -448,12 +449,16 @@ func main() {
 		scores, err := scoreboardStore.GetLeaderboard("headpat", count)
 		if err != nil {
 			w.WriteHeader(http.StatusInternalServerError)
-			fmt.Fprintf(w, "Failed to get headpat leaderboard")
+			fmt.Fprintf(w, "Failed to get headpat leaderboard\n")
 			log.Printf("Error: Failed to get headpat count: %s\n", err)
 			return
 		}
 
-		json.NewEncoder(w).Encode(scores)
+		w.Header().Set("Content-Type", "text/plain")
+		fmt.Fprintf(w, "Top headpatters girldmHeadpat \n")
+		for _, entry := range scores {
+			fmt.Fprintf(w, "%d. %d - %s\n", entry.Rank, int(entry.Score), entry.User)
+		}
 	})
 
 	mux.HandleFunc("/headpat/leaderboard/{user}", func(w http.ResponseWriter, r *http.Request) {
@@ -461,17 +466,19 @@ func main() {
 		score, err := scoreboardStore.GetScoreByUser("headpat", userString)
 		if err != nil {
 			w.WriteHeader(http.StatusInternalServerError)
-			fmt.Fprintf(w, "Failed to get headpat rank")
+			fmt.Fprintf(w, "Failed to get headpat rank\n")
 			log.Printf("Error: Failed to get headpat rank: %s\n", err)
 			return
 		}
 
 		if score.Rank == -1 {
-			w.WriteHeader(http.StatusNoContent)
+			w.WriteHeader(http.StatusNotFound)
+			fmt.Fprintf(w, "no headpats girldmCrybaby \n")
 			return
 		}
 
-		json.NewEncoder(w).Encode(score)
+		w.Header().Set("Content-Type", "text/plain")
+		fmt.Fprintf(w, "You are ranked %d with %d headpats redeemed girldmHeadpat \n", score.Rank, int(score.Score))
 	})
 
 	mux.Handle("POST /headpat/fulfill", authMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
