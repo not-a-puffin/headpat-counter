@@ -192,7 +192,12 @@ func (s *redisStore) GetLeaderboard(boardName string, count int) ([]ScoreEntry, 
 func (s *redisStore) GetScoreByUser(boardName string, userName string) (ScoreEntry, error) {
 	ctx := context.Background()
 	key := "scoreboard:" + boardName
-	result, err := s.client.ZRevRankWithScore(ctx, key, userName).Result()
+	rank, err := s.client.ZRevRank(ctx, key, userName).Result()
+	if err != nil && err != redis.Nil {
+		return ScoreEntry{}, err
+	}
+
+	score, err := s.client.ZScore(ctx, key, userName).Result()
 	if err != nil && err != redis.Nil {
 		return ScoreEntry{}, err
 	}
@@ -202,8 +207,8 @@ func (s *redisStore) GetScoreByUser(boardName string, userName string) (ScoreEnt
 		return ScoreEntry{Rank: -1, User: userName}, nil
 	}
 
-	score := ScoreEntry{Rank: result.Rank + 1, Score: result.Score, User: userName}
-	return score, nil
+	entry := ScoreEntry{Rank: rank + 1, Score: score, User: userName}
+	return entry, nil
 }
 
 func (s *redisStore) ResetScoreboard(boardName string) error {
