@@ -348,14 +348,6 @@ func main() {
 	mux.Handle("/favicon.svg", fs)
 	mux.Handle("/favicon-96x96.png", fs)
 
-	mux.Handle("/", authMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if hasAuth(r) {
-			http.Redirect(w, r, "/control-panel/", http.StatusSeeOther)
-		} else {
-			http.Redirect(w, r, "/auth/", http.StatusSeeOther)
-		}
-	})))
-
 	mux.Handle("/auth/", authMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if hasAuth(r) {
 			http.Redirect(w, r, "/control-panel/", http.StatusSeeOther)
