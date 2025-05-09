@@ -454,10 +454,14 @@ func main() {
 			return
 		}
 
+		n := len(scores)
+		maxRankWidth := len(strconv.Itoa(int(scores[n-1].Rank)))
+		maxScoreWidth := len(strconv.Itoa(int(scores[0].Score)))
+
 		w.Header().Set("Content-Type", "text/plain")
 		fmt.Fprintf(w, "Top headpatters girldmHeadpat \n")
 		for _, entry := range scores {
-			fmt.Fprintf(w, "%d. %d - %s\n", entry.Rank, int(entry.Score), entry.User)
+			fmt.Fprintf(w, "%*d. %*d - %s\n", maxRankWidth, entry.Rank, maxScoreWidth, int(entry.Score), entry.User)
 		}
 	})
 
