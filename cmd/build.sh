@@ -2,7 +2,7 @@
 
 set -euo pipefail
 
-VERSION="1.0.1"
+VERSION="1.0.2"
 OS="linux"
 GC_FLAGS=""
 LD_FLAGS="-s -w" # strip symbol tables
