@@ -63,7 +63,7 @@ func NewInMemoryEventStore() EventStore {
 	}
 }
 
-func (s *inMemoryEventStore) AddPending(eventName, id string) (EventCount, error) {
+func (s *inMemoryEventStore) AddPendingEvent(eventName, id string) (EventCount, error) {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
 	count := s.events[eventName]
@@ -74,21 +74,21 @@ func (s *inMemoryEventStore) AddPending(eventName, id string) (EventCount, error
 	return count, nil
 }
 
-func (s *inMemoryEventStore) ContainsEvent(eventName, id string) bool {
+func (s *inMemoryEventStore) EventExists(eventName, id string) bool {
 	s.mutex.RLock()
 	defer s.mutex.RUnlock()
 	_, ok := s.ids[eventName+":id:"+id]
 	return ok
 }
 
-func (s *inMemoryEventStore) GetCount(eventName string) (EventCount, error) {
+func (s *inMemoryEventStore) EventCount(eventName string) (EventCount, error) {
 	s.mutex.RLock()
 	defer s.mutex.RUnlock()
 	count := s.events[eventName]
 	return count, nil
 }
 
-func (s *inMemoryEventStore) Fulfill(eventName string, number int) (EventCount, error) {
+func (s *inMemoryEventStore) FulfillEvent(eventName string, number int) (EventCount, error) {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
 	count := s.events[eventName]

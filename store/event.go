@@ -8,10 +8,10 @@ type EventCount struct {
 }
 
 type EventStore interface {
-	AddPending(eventName, id string) (EventCount, error)
-	ContainsEvent(eventName, id string) bool
-	GetCount(eventName string) (EventCount, error)
-	Fulfill(eventName string, number int) (EventCount, error)
+	AddPendingEvent(eventName, id string) (EventCount, error)
+	EventExists(eventName, id string) bool
+	EventCount(eventName string) (EventCount, error)
+	FulfillEvent(eventName string, number int) (EventCount, error)
 }
 
 type EventStoreError string

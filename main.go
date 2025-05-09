@@ -15,6 +15,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -64,15 +65,16 @@ type NotificationPayload struct {
 }
 
 var (
-	isDev         bool
-	appClientId   string
-	baseURL       string
-	clientsMap    map[chan HeadpatMessage]bool
-	clientsMutex  sync.RWMutex
-	broadcasterId string
-	rewardId      string
-	eventStore    store.EventStore
-	sessionStore  store.SessionStore
+	isDev           bool
+	appClientId     string
+	baseURL         string
+	clientsMap      map[chan HeadpatMessage]bool
+	clientsMutex    sync.RWMutex
+	broadcasterId   string
+	rewardId        string
+	eventStore      store.EventStore
+	sessionStore    store.SessionStore
+	scoreboardStore store.ScoreboardStore
 )
 
 func newClient() chan HeadpatMessage {
@@ -97,16 +99,19 @@ func shouldAddHeadpat(event ChannelPointsRedemptionEvent) bool {
 	timestamp, _ := time.Parse(time.RFC3339Nano, event.RedeemedAt)
 	duration := time.Since(timestamp)
 	if duration > 10*time.Minute {
+		log.Println("Skipping event older than 10 minutes")
 		return false
 	}
 
 	// Skip notifications that are not from headpats
 	if !isDev && (event.BroadcasterId != broadcasterId || event.Reward.Id != rewardId) {
+		log.Println("Skipping event that was not a headpat")
 		return false
 	}
 
 	// Skip this headpat if it has already been counted
-	if eventStore.ContainsEvent("headpat", event.Id) {
+	if eventStore.EventExists("headpat", event.Id) {
+		log.Println("Skipping event that was already recorded")
 		return false
 	}
 
@@ -132,10 +137,15 @@ func handleNotification(notification NotificationPayload) {
 		}
 
 		if shouldAddHeadpat(event) {
-			newCount, err := eventStore.AddPending("headpat", event.Id)
+			newCount, err := eventStore.AddPendingEvent("headpat", event.Id)
 			if err != nil {
 				log.Printf("Error: Failed to add headpat event: %s\n", err)
 				break
+			}
+
+			err = scoreboardStore.ScoreboardIncr("headpat", event.UserLogin, 1)
+			if err != nil {
+				log.Printf("Error: Failed to increment scoreboard: %s\n", err)
 			}
 
 			message := HeadpatMessage{
@@ -421,11 +431,11 @@ func main() {
 	})))
 
 	mux.HandleFunc("/headpat/count", func(w http.ResponseWriter, r *http.Request) {
-		count, err := eventStore.GetCount("headpat")
+		count, err := eventStore.EventCount("headpat")
 		if err != nil {
 			w.WriteHeader(http.StatusInternalServerError)
 			fmt.Fprintf(w, "Failed to get headpat count")
-			log.Printf("Error: Failed to get headpat count: %s", err)
+			log.Printf("Error: Failed to get headpat count: %s\n", err)
 			return
 		}
 		message := HeadpatMessage{
@@ -434,6 +444,42 @@ func main() {
 			Timestamp: string(time.Now().Format(time.RFC3339Nano)),
 		}
 		json.NewEncoder(w).Encode(message)
+	})
+
+	mux.HandleFunc("/headpat/leaderboard", func(w http.ResponseWriter, r *http.Request) {
+		countStr := r.URL.Query().Get("count")
+		count, err := strconv.Atoi(countStr)
+		if err != nil || count < 1 {
+			count = 10
+		}
+
+		scores, err := scoreboardStore.GetLeaderboard("headpat", count)
+		if err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			fmt.Fprintf(w, "Failed to get headpat leaderboard")
+			log.Printf("Error: Failed to get headpat count: %s\n", err)
+			return
+		}
+
+		json.NewEncoder(w).Encode(scores)
+	})
+
+	mux.HandleFunc("/headpat/leaderboard/{user}", func(w http.ResponseWriter, r *http.Request) {
+		userString := r.PathValue("user")
+		score, err := scoreboardStore.GetScoreByUser("headpat", userString)
+		if err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			fmt.Fprintf(w, "Failed to get headpat rank")
+			log.Printf("Error: Failed to get headpat rank: %s\n", err)
+			return
+		}
+
+		if score.Rank == -1 {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+
+		json.NewEncoder(w).Encode(score)
 	})
 
 	mux.Handle("POST /headpat/fulfill", authMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -463,7 +509,7 @@ func main() {
 			return
 		}
 
-		count, err := eventStore.Fulfill("headpat", req.Amount)
+		count, err := eventStore.FulfillEvent("headpat", req.Amount)
 		if err == store.NoChange {
 			w.WriteHeader(http.StatusNoContent)
 			return
@@ -591,14 +637,10 @@ func main() {
 
 	clientsMap = make(map[chan HeadpatMessage]bool, 2)
 
-	if isDev {
-		eventStore = store.NewInMemoryEventStore()
-		sessionStore = store.NewInMemorySessionStore()
-	} else {
-		redisStore := store.NewRedisStore()
-		eventStore = redisStore
-		sessionStore = redisStore
-	}
+	redisStore := store.NewRedisStore()
+	eventStore = redisStore
+	scoreboardStore = redisStore
+	sessionStore = redisStore
 
 	port := os.Getenv("PORT")
 	if port == "" {
