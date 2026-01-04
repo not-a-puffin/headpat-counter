@@ -15,7 +15,7 @@
                 padding: 5px;
                 color: white;
                 background-color: #1e0c35;
-                font-family: "Sniglet";
+                font-family: Sniglet, sans-serif;
                 font-weight: 800;
                 font-size: 24px;
                 font-style: normal;
@@ -118,9 +118,9 @@
                 if (timestamp <= mostRecentTimestamp) return;
                 mostRecentTimestamp = timestamp;
 
-                const count = parseInt(data.count);
-                const total = parseInt(data.total);
-                if (isNaN(count) || isNaN(total)) return;
+                const count = parseInt(data.count, 10);
+                const total = parseInt(data.total, 10);
+                if (Number.isNaN(count) || Number.isNaN(total)) return;
 
                 countEl.style.setProperty("--num", data.count);
                 totalEl.style.setProperty("--num", data.total);
