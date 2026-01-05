@@ -172,15 +172,31 @@ func handleNotification(notification NotificationPayload) {
 type contextKey int
 
 const (
-	contextKeyAuth contextKey = iota + 1
+	contextKeyAuth      contextKey    = iota + 1
+	cookieLifetime      time.Duration = 24 * 180 * time.Hour
+	cookieRefreshWindow time.Duration = 24 * 30 * time.Hour
+	keepaliveDuration   time.Duration = 30 * time.Second
+	oauthURL            string        = "https://id.twitch.tv/oauth2/token"
+	tokenName           string        = "green_haired_catgirl_token"
 )
-
-const tokenName string = "green_haired_catgirl_token"
 
 func authMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hasActiveSession := false
 		cookie, _ := r.Cookie(tokenName)
-		hasActiveSession := cookie != nil && sessionStore.ContainsSession(cookie.Value)
+		if cookie != nil {
+			hasActiveSession = sessionStore.ContainsSession(cookie.Value)
+			if hasActiveSession && time.Until(cookie.Expires) < cookieRefreshWindow {
+				http.SetCookie(w, &http.Cookie{
+					Name:     tokenName,
+					Path:     "/",
+					Value:    cookie.Value,
+					HttpOnly: true,
+					Secure:   !isDev,
+					Expires:  time.Now().Add(cookieLifetime),
+				})
+			}
+		}
 		ctx := context.WithValue(r.Context(), contextKeyAuth, hasActiveSession)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
@@ -205,7 +221,6 @@ func getToken(code string) (*OauthTokenResult, error) {
 		return nil, fmt.Errorf("invalid client secret")
 	}
 
-	oauthURL := "https://id.twitch.tv/oauth2/token"
 	params := url.Values{}
 	params.Add("client_id", appClientId)
 	params.Add("client_secret", secret)
@@ -403,15 +418,14 @@ func main() {
 			log.Printf("Error: failed to save session: %s\n", err)
 		}
 
-		cookie := &http.Cookie{
+		http.SetCookie(w, &http.Cookie{
 			Name:     tokenName,
 			Value:    sessionToken,
 			Path:     "/",
 			HttpOnly: true,
 			Secure:   !isDev,
-			Expires:  time.Now().Add(24 * 60 * time.Hour),
-		}
-		http.SetCookie(w, cookie)
+			Expires:  time.Now().Add(cookieLifetime),
+		})
 	})
 
 	mux.Handle("/control-panel/", authMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
