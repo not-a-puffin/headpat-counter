@@ -12,7 +12,8 @@ import (
 	"time"
 )
 
-const sessionLifetime time.Duration = 24 * 60 * time.Hour
+// Set lifetime to zero for no expiration
+const sessionLifetime time.Duration = 0
 
 type Session struct {
 	Access  string `json:"access"`
