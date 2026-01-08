@@ -215,7 +215,9 @@ type OauthTokenResult struct {
 	TokenType    string          `json:"token_type"`
 }
 
-func getToken(code string) (*OauthTokenResult, error) {
+func getUserAccessToken(code string) (*OauthTokenResult, error) {
+	log.Println("Getting new user access token")
+
 	secret := os.Getenv("APP_CLIENT_SECRET")
 	if secret == "" {
 		return nil, fmt.Errorf("invalid client secret")
@@ -227,6 +229,51 @@ func getToken(code string) (*OauthTokenResult, error) {
 	params.Add("code", code)
 	params.Add("grant_type", "authorization_code")
 	params.Add("redirect_uri", baseURL+"/auth/callback")
+	payload := params.Encode()
+
+	req, err := http.NewRequest("POST", oauthURL, strings.NewReader(payload))
+	if err != nil {
+		return nil, fmt.Errorf("creating request: %w", err)
+	}
+	req.Header.Add("Content-Type", "application/x-www-form-urlencoded")
+
+	client := &http.Client{}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("sending request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("request failed with status: %s", resp.Status)
+	}
+
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("reading response: %w", err)
+	}
+
+	var result OauthTokenResult
+	if err = json.Unmarshal(data, &result); err != nil {
+		return nil, fmt.Errorf("decoding JSON: %w", err)
+	}
+
+	return &result, nil
+}
+
+func refreshUserAccessToken(refreshToken string) (*OauthTokenResult, error) {
+	log.Println("Refreshing user access token")
+
+	secret := os.Getenv("APP_CLIENT_SECRET")
+	if secret == "" {
+		return nil, fmt.Errorf("invalid client secret")
+	}
+
+	params := url.Values{}
+	params.Add("client_id", appClientId)
+	params.Add("client_secret", secret)
+	params.Add("grant_type", "refresh_token")
+	params.Add("refresh_token", refreshToken)
 	payload := params.Encode()
 
 	req, err := http.NewRequest("POST", oauthURL, strings.NewReader(payload))
@@ -391,9 +438,9 @@ func main() {
 			return
 		}
 
-		tokenResult, err := getToken(code)
+		tokenResult, err := getUserAccessToken(code)
 		if tokenResult == nil || err != nil {
-			log.Printf("Error: failed to get token: %s\n", err)
+			log.Printf("Error: failed to get user access token: %s\n", err)
 			return
 		}
 
@@ -410,12 +457,18 @@ func main() {
 
 		sessionToken := generateSessionToken()
 		session := store.Session{
-			Access:  tokenResult.AccessToken,
-			Refresh: tokenResult.RefreshToken,
-			UserId:  user.Id,
+			UserId: user.Id,
 		}
 		if err = sessionStore.SetSession(sessionToken, session); err != nil {
 			log.Printf("Error: failed to save session: %s\n", err)
+		}
+
+		tokenPair := store.TokenPair{
+			Access:  tokenResult.AccessToken,
+			Refresh: tokenResult.RefreshToken,
+		}
+		if err = sessionStore.SetTokenPair("user", tokenPair); err != nil {
+			log.Printf("Error: failed to save user access token pair: %s\n", err)
 		}
 
 		http.SetCookie(w, &http.Cookie{

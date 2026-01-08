@@ -36,13 +36,17 @@ func (s redisStore) GetSession(token string) (*Session, error) {
 	if err != nil {
 		return nil, err
 	}
-	session, err := decodeSession(string(bytes))
+
+	var session Session
+	if err := json.Unmarshal(bytes, &session); err != nil {
+		return nil, err
+	}
 
 	return &session, nil
 }
 
 func (s redisStore) SetSession(token string, session Session) error {
-	bytes, err := encodeSession(session)
+	bytes, err := json.Marshal(session)
 	if err != nil {
 		return err
 	}
@@ -63,6 +67,38 @@ func (s redisStore) ContainsSession(token string) bool {
 	key := "session:" + token
 	count := s.client.Exists(ctx, key).Val()
 	return count > 0
+}
+
+func (s redisStore) GetTokenPair(id string) (*TokenPair, error) {
+	ctx := context.Background()
+	key := "token:" + id
+	bytes, err := s.client.Get(ctx, key).Bytes()
+	if err == redis.Nil {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	tokenPair, err := decodeTokenPair(string(bytes))
+	if err != nil {
+		return nil, err
+	}
+
+	return &tokenPair, nil
+}
+
+func (s redisStore) SetTokenPair(id string, tokenPair TokenPair) error {
+	bytes, err := encodeTokenPair(tokenPair)
+	if err != nil {
+		return err
+	}
+
+	ctx := context.Background()
+	key := "token:" + id
+
+	// Token does not expire
+	return s.client.Set(ctx, key, bytes, 0).Err()
 }
 
 func (s *redisStore) AddPendingEvent(eventName, id string) (EventCount, error) {

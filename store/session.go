@@ -16,9 +16,12 @@ import (
 const sessionLifetime time.Duration = 0
 
 type Session struct {
+	UserId string `json:"user_id"`
+}
+
+type TokenPair struct {
 	Access  string `json:"access"`
 	Refresh string `json:"refresh"`
-	UserId  string `json:"user_id"`
 }
 
 type SessionStore interface {
@@ -26,6 +29,8 @@ type SessionStore interface {
 	GetSession(token string) (*Session, error)
 	DeleteSession(token string) error
 	ContainsSession(token string) bool
+	SetTokenPair(id string, tokenPair TokenPair) error
+	GetTokenPair(id string) (*TokenPair, error)
 }
 
 func getEncryptionKey() ([]byte, error) {
@@ -103,8 +108,8 @@ func decrypt(bytes []byte) ([]byte, error) {
 	return plaintext, nil
 }
 
-func encodeSession(session Session) (string, error) {
-	jsonBytes, err := json.Marshal(session)
+func encodeTokenPair(tokenPair TokenPair) (string, error) {
+	jsonBytes, err := json.Marshal(tokenPair)
 	if err != nil {
 		return "", err
 	}
@@ -118,19 +123,19 @@ func encodeSession(session Session) (string, error) {
 	return base64Str, nil
 }
 
-func decodeSession(base64Str string) (Session, error) {
-	var session Session
+func decodeTokenPair(base64Str string) (TokenPair, error) {
+	var tokenPair TokenPair
 
 	bytes, err := base64.StdEncoding.DecodeString(base64Str)
 	if err != nil {
-		return session, err
+		return tokenPair, err
 	}
 
 	decrypted, err := decrypt(bytes)
 	if err != nil {
-		return session, err
+		return tokenPair, err
 	}
 
-	err = json.Unmarshal(decrypted, &session)
-	return session, err
+	err = json.Unmarshal(decrypted, &tokenPair)
+	return tokenPair, err
 }
