@@ -48,6 +48,15 @@ type ChannelPointsRedemptionEvent struct {
 	RedeemedAt       string `json:"redeemed_at"`
 }
 
+type StreamOnlineEvent struct {
+	Id               string `json:"id"`
+	BroadcasterId    string `json:"broadcaster_user_id"`
+	BroadcasterLogin string `json:"broadcaster_user_login"`
+	BroadcasterName  string `json:"broadcaster_user_name"`
+	EventType        string `json:"type"`
+	StartedAt        string `json:"started_at"`
+}
+
 type Subscription struct {
 	Id        string          `json:"id"`
 	Type      string          `json:"type"`
@@ -72,6 +81,7 @@ var (
 	clientsMutex    sync.RWMutex
 	broadcasterId   string
 	rewardId        string
+	currentStreamId string
 	eventStore      store.EventStore
 	sessionStore    store.SessionStore
 	scoreboardStore store.ScoreboardStore
@@ -127,45 +137,72 @@ func verifySignature(messageSignature, messageID, messageTimestamp string, body 
 	return hmac.Equal([]byte(expectedSignature), []byte(messageSignature))
 }
 
-func handleNotification(notification NotificationPayload) {
-	switch notification.Subscription.Type {
-	case "channel.channel_points_custom_reward_redemption.add":
-		var event ChannelPointsRedemptionEvent
-		if err := json.Unmarshal(notification.Event, &event); err != nil {
-			log.Printf("Error: Failed to parse event: channel.channel_points_custom_reward_redemption.add: %s\n", err)
-			break
+func handleStreamOnlineNotification(notification NotificationPayload) {
+	if notification.Subscription.Type != "stream.online" {
+		log.Printf("Error: unexpected subscription type: %s", notification.Subscription.Type)
+		return
+	}
+
+	var event StreamOnlineEvent
+	if err := json.Unmarshal(notification.Event, &event); err != nil {
+		log.Printf("Error: Failed to parse event: stream.online: %s\n", err)
+		return
+	}
+
+	log.Printf("Stream online (id: %s)\n", event.Id)
+
+	if err := eventStore.AddStreamStartEvent(event.Id, event.StartedAt); err != nil {
+		log.Printf("Error: Failed to add stream start event: %s\n", err)
+	}
+
+	currentStreamId = event.Id
+	ctx, cancel := context.WithTimeout(context.Background(), 600*time.Second)
+	defer cancel()
+
+	log.Println("Starting headpat poller")
+	go startHeadpatPoller(ctx, cancel)
+
+	<-ctx.Done()
+	log.Println("Headpat poller finished")
+
+	currentStreamId = ""
+}
+
+func handleHeadpatNotification(notification NotificationPayload) {
+	if notification.Subscription.Type != "channel.channel_points_custom_reward_redemption.add" {
+		log.Printf("Error: unexpected subscription type: %s", notification.Subscription.Type)
+		return
+	}
+
+	var event ChannelPointsRedemptionEvent
+	if err := json.Unmarshal(notification.Event, &event); err != nil {
+		log.Printf("Error: Failed to parse event: channel.channel_points_custom_reward_redemption.add: %s\n", err)
+		return
+	}
+
+	if shouldAddHeadpat(event) {
+		newCount, err := eventStore.AddPendingEvent("headpat", event.Id)
+		if err != nil {
+			log.Printf("Error: Failed to add headpat event: %s\n", err)
+			return
 		}
 
-		if shouldAddHeadpat(event) {
-			newCount, err := eventStore.AddPendingEvent("headpat", event.Id)
-			if err != nil {
-				log.Printf("Error: Failed to add headpat event: %s\n", err)
-				break
-			}
-
-			err = scoreboardStore.ScoreboardIncr("headpat", event.UserLogin, 1)
-			if err != nil {
-				log.Printf("Error: Failed to increment scoreboard: %s\n", err)
-			}
-
-			message := HeadpatMessage{
-				Count:     newCount.Pending,
-				Total:     newCount.Total,
-				Timestamp: string(time.Now().Format(time.RFC3339Nano)),
-			}
-
-			clientsMutex.RLock()
-			for client := range clientsMap {
-				client <- message
-			}
-			clientsMutex.RUnlock()
+		err = scoreboardStore.ScoreboardIncr("headpat", event.UserLogin, 1)
+		if err != nil {
+			log.Printf("Error: Failed to increment scoreboard: %s\n", err)
 		}
 
-	case "stream.online":
-		log.Println("Stream online")
+		message := HeadpatMessage{
+			Count:     newCount.Pending,
+			Total:     newCount.Total,
+			Timestamp: string(time.Now().Format(time.RFC3339Nano)),
+		}
 
-	case "stream.offline":
-		log.Println("Stream offline")
+		clientsMutex.RLock()
+		for client := range clientsMap {
+			client <- message
+		}
+		clientsMutex.RUnlock()
 	}
 }
 
@@ -187,6 +224,7 @@ func authMiddleware(next http.Handler) http.Handler {
 		if cookie != nil {
 			hasActiveSession = sessionStore.ContainsSession(cookie.Value)
 			if hasActiveSession && time.Until(cookie.Expires) < cookieRefreshWindow {
+				log.Println("Setting cookie")
 				http.SetCookie(w, &http.Cookie{
 					Name:     tokenName,
 					Path:     "/",
@@ -327,6 +365,8 @@ type UserLookupResult struct {
 func lookupUser(accessToken string) (*TwitchUser, error) {
 	helixURL := "https://api.twitch.tv/helix/users"
 
+	log.Println("Verifying user")
+
 	req, err := http.NewRequest("GET", helixURL, nil)
 	if err != nil {
 		return nil, fmt.Errorf("creating request: %w", err)
@@ -374,7 +414,219 @@ func generateSessionToken() string {
 	return token
 }
 
-const keepaliveDuration time.Duration = 30 * time.Second
+type CustomReward struct {
+	BroadcasterId                    string          `json:"broadcaster_id"`
+	BroadcasterLogin                 string          `json:"broadcaster_login"`
+	BroadcasterName                  string          `json:"broadcaster_name"`
+	Id                               string          `json:"id"`
+	Title                            string          `json:"title"`
+	Prompt                           string          `json:"prompt"`
+	Cost                             int             `json:"cost"`
+	Image                            json.RawMessage `json:"image"`
+	DefaultImage                     json.RawMessage `json:"default_image"`
+	BackgroundColor                  string          `json:"background_color"`
+	IsEnabled                        bool            `json:"is_enabled"`
+	IsUserInputRequired              bool            `json:"is_user_input_required"`
+	MaxPerStreamSetting              json.RawMessage `json:"max_per_stream_setting"`
+	MaxPerUserSetting                json.RawMessage `json:"max_per_user_per_stream_setting"`
+	GlobalCooldownSetting            json.RawMessage `json:"global_cooldown_setting"`
+	IsPaused                         bool            `json:"is_paused"`
+	IsInStock                        bool            `json:"is_in_stock"`
+	SkipRequestQueue                 bool            `json:"should_redemptions_skip_request_queue"`
+	RedemptionsRedeemedCurrentStream *int            `json:"redemptions_redeemed_current_stream"`
+	CooldownExpiresAt                *string         `json:"cooldown_expires_at"`
+}
+
+type CustomRewardResult struct {
+	Data []CustomReward `json:"data"`
+}
+
+func startHeadpatPoller(ctx context.Context, cancel context.CancelFunc) {
+	time.Sleep(10 * time.Second)
+
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+
+	streamId := currentStreamId
+
+	for {
+		select {
+		case <-ticker.C:
+			if currentStreamId != streamId {
+				cancel()
+				return
+			}
+
+			reward, err := pollHeadpats()
+			log.Printf("Headpat status: { Redeemed: %v, Out of Stock: %t }\n", reward.RedemptionsRedeemedCurrentStream, !reward.IsInStock)
+			if err != nil {
+				log.Printf("Error occurred while polling headpats: %s\n", err)
+			}
+			if reward != nil {
+				newCount := reward.RedemptionsRedeemedCurrentStream
+				if newCount != nil {
+					eventStore.AddNumRedeemedThisStream(streamId, *newCount)
+				}
+				if !reward.IsInStock {
+					log.Println("Headpats out of stock!")
+					timestamp := string(time.Now().Format(time.RFC3339Nano))
+					eventStore.AddOutOfStockEvent(streamId, timestamp)
+					cancel()
+					return
+				}
+			}
+
+		case <-ctx.Done():
+			return
+		}
+	}
+}
+
+func pollHeadpats() (*CustomReward, error) {
+	helixURL := "https://api.twitch.tv/helix/channel_points/custom_rewards"
+
+	params := url.Values{}
+	params.Add("broadcaster_id", broadcasterId)
+	params.Add("id", rewardId)
+	url := helixURL + "?" + params.Encode()
+
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return nil, fmt.Errorf("creating request: %w", err)
+	}
+
+	tokenPair, err := sessionStore.GetTokenPair("user")
+	if err != nil {
+		return nil, fmt.Errorf("retrieving user access token: %w", err)
+	}
+	if tokenPair == nil {
+		return nil, fmt.Errorf("missing user access token")
+	}
+
+	req.Header.Add("Authorization", "Bearer "+tokenPair.Access)
+	req.Header.Add("Client-Id", appClientId)
+
+	client := &http.Client{}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("sending request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusUnauthorized {
+		// Refresh user access token
+		tokenPair, err = sessionStore.GetTokenPair("user")
+		if err != nil {
+			return nil, fmt.Errorf("failed getting stored token: %w", err)
+		}
+		tokenResult, err := refreshUserAccessToken(tokenPair.Refresh)
+		if err != nil {
+			return nil, fmt.Errorf("failed to refresh user access token: %w", err)
+		}
+		tokenPair := store.TokenPair{
+			Access:  tokenResult.AccessToken,
+			Refresh: tokenResult.RefreshToken,
+		}
+		if err = sessionStore.SetTokenPair("user", tokenPair); err != nil {
+			log.Printf("Error: failed to save user access token: %s\n", err)
+		}
+	} else if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("request failed with status: %s", resp.Status)
+	}
+
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("reading response: %w", err)
+	}
+
+	var result CustomRewardResult
+	if err = json.Unmarshal(data, &result); err != nil {
+		return nil, fmt.Errorf("decoding JSON: %w", err)
+	}
+
+	if len(result.Data) == 0 {
+		return nil, fmt.Errorf("no custom reward found")
+	}
+
+	if len(result.Data) > 1 {
+		return nil, fmt.Errorf("multiple custom rewards found")
+	}
+
+	return &result.Data[0], nil
+}
+
+func notificationHandler(handler func(NotificationPayload)) func(http.ResponseWriter, *http.Request) {
+	return func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			fmt.Fprintf(w, "Failed to read request")
+			log.Printf("Error: Failed to read request: %s\n", err)
+			return
+		}
+
+		messageSignature := r.Header.Get("Twitch-Eventsub-Message-Signature")
+		messageID := r.Header.Get("Twitch-Eventsub-Message-Id")
+		messageTimestamp := r.Header.Get("Twitch-Eventsub-Message-Timestamp")
+
+		if !verifySignature(messageSignature, messageID, messageTimestamp, body) {
+			w.WriteHeader(http.StatusForbidden)
+			log.Println("Failed to verify message")
+			return
+		}
+
+		flusher, _ := w.(http.Flusher)
+
+		messageType := r.Header.Get("Twitch-Eventsub-Message-Type")
+		switch messageType {
+		case "notification":
+			var message NotificationPayload
+			if err = json.Unmarshal(body, &message); err != nil {
+				w.WriteHeader(http.StatusInternalServerError)
+				fmt.Fprintf(w, "Failed to parse JSON")
+				log.Printf("Error: Failed to parse webhook notifiation payload: %s\n", err)
+				break
+			}
+			w.WriteHeader(http.StatusNoContent)
+			flusher.Flush()
+			handler(message)
+
+		case "webhook_callback_verification":
+			type VerificationPayload struct {
+				Subscription Subscription `json:"subscription"`
+				Challenge    string       `json:"challenge"`
+			}
+
+			var message VerificationPayload
+			if err = json.Unmarshal(body, &message); err != nil {
+				w.WriteHeader(http.StatusInternalServerError)
+				fmt.Fprintf(w, "Failed to parse JSON")
+				log.Printf("Error: Failed to parse webhook verification payload: %s\n", err)
+				break
+			}
+
+			log.Println("Verifying subscription:", message.Subscription.Type)
+			w.Header().Set("Content-Type", "text/plain")
+			fmt.Fprint(w, message.Challenge)
+
+		case "revocation":
+			type RevocationPayload struct {
+				Subscription Subscription `json:"subscription"`
+			}
+
+			var message RevocationPayload
+			if err = json.Unmarshal(body, &message); err != nil {
+				w.WriteHeader(http.StatusInternalServerError)
+				fmt.Fprintf(w, "Failed to parse JSON")
+				log.Printf("Error: Failed to parse webhook revocation payload: %s\n", err)
+				break
+			}
+
+			w.WriteHeader(http.StatusNoContent)
+			log.Println("Subscription revoked:", message.Subscription.Type, message.Subscription.Status)
+		}
+	}
+}
 
 func main() {
 	isDev = os.Getenv("MODE") == "DEV"
@@ -432,6 +684,8 @@ func main() {
 	mux.HandleFunc("/auth/callback", func(w http.ResponseWriter, r *http.Request) {
 		defer http.Redirect(w, r, "/auth/", http.StatusSeeOther)
 
+		log.Println("Received auth callback")
+
 		code := r.URL.Query().Get("code")
 		if code == "" {
 			log.Println("Callback did not receive an authorization code")
@@ -471,6 +725,7 @@ func main() {
 			log.Printf("Error: failed to save user access token pair: %s\n", err)
 		}
 
+		log.Println("Setting cookie")
 		http.SetCookie(w, &http.Cookie{
 			Name:     tokenName,
 			Value:    sessionToken,
@@ -634,76 +889,8 @@ func main() {
 		}
 	})
 
-	mux.HandleFunc("POST /headpat/notification", func(w http.ResponseWriter, r *http.Request) {
-		body, err := io.ReadAll(r.Body)
-		if err != nil {
-			w.WriteHeader(http.StatusInternalServerError)
-			fmt.Fprintf(w, "Failed to read request")
-			log.Printf("Error: Failed to read request: %s\n", err)
-			return
-		}
-
-		messageSignature := r.Header.Get("Twitch-Eventsub-Message-Signature")
-		messageID := r.Header.Get("Twitch-Eventsub-Message-Id")
-		messageTimestamp := r.Header.Get("Twitch-Eventsub-Message-Timestamp")
-
-		if !verifySignature(messageSignature, messageID, messageTimestamp, body) {
-			w.WriteHeader(http.StatusForbidden)
-			log.Println("Failed to verify message")
-			return
-		}
-
-		flusher, _ := w.(http.Flusher)
-
-		messageType := r.Header.Get("Twitch-Eventsub-Message-Type")
-		switch messageType {
-		case "notification":
-			var message NotificationPayload
-			if err = json.Unmarshal(body, &message); err != nil {
-				w.WriteHeader(http.StatusInternalServerError)
-				fmt.Fprintf(w, "Failed to parse JSON")
-				log.Printf("Error: Failed to parse webhook notifiation payload: %s\n", err)
-				break
-			}
-			w.WriteHeader(http.StatusNoContent)
-			flusher.Flush()
-			handleNotification(message)
-
-		case "webhook_callback_verification":
-			type VerificationPayload struct {
-				Subscription Subscription `json:"subscription"`
-				Challenge    string       `json:"challenge"`
-			}
-
-			var message VerificationPayload
-			if err = json.Unmarshal(body, &message); err != nil {
-				w.WriteHeader(http.StatusInternalServerError)
-				fmt.Fprintf(w, "Failed to parse JSON")
-				log.Printf("Error: Failed to parse webhook verification payload: %s\n", err)
-				break
-			}
-
-			log.Println("Verifying subscription:", message.Subscription.Type)
-			w.Header().Set("Content-Type", "text/plain")
-			fmt.Fprint(w, message.Challenge)
-
-		case "revocation":
-			type RevocationPayload struct {
-				Subscription Subscription `json:"subscription"`
-			}
-
-			var message RevocationPayload
-			if err = json.Unmarshal(body, &message); err != nil {
-				w.WriteHeader(http.StatusInternalServerError)
-				fmt.Fprintf(w, "Failed to parse JSON")
-				log.Printf("Error: Failed to parse webhook revocation payload: %s\n", err)
-				break
-			}
-
-			w.WriteHeader(http.StatusNoContent)
-			log.Println("Subscription revoked:", message.Subscription.Type, message.Subscription.Status)
-		}
-	})
+	mux.HandleFunc("POST /notification/headpat", notificationHandler(handleHeadpatNotification))
+	mux.HandleFunc("POST /notification/online", notificationHandler(handleStreamOnlineNotification))
 
 	clientsMap = make(map[chan HeadpatMessage]bool, 2)
 

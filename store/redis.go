@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 
 	"github.com/redis/go-redis/v9"
@@ -195,6 +196,34 @@ func (s *redisStore) EventCount(eventName string) (EventCount, error) {
 		Total:   total,
 	}
 	return count, nil
+}
+
+func (s *redisStore) AddStreamStartEvent(id, startTime string) error {
+	ctx := context.Background()
+	key := "stream:" + id + ":start"
+	return s.client.Set(ctx, key, startTime, streamLifetime).Err()
+}
+
+func (s *redisStore) AddNumRedeemedThisStream(streamId string, count int) error {
+	ctx := context.Background()
+	key := "stream:" + streamId + ":num-redeemed"
+	return s.client.Set(ctx, key, count, streamLifetime).Err()
+}
+
+func (s *redisStore) GetNumRedeemedThisStream(streamId string) (int, error) {
+	ctx := context.Background()
+	key := "stream:" + streamId + ":num-redeemed"
+	count, err := s.client.Get(ctx, key).Int()
+	if err != nil && err != redis.Nil {
+		return 0, err
+	}
+	return count, nil
+}
+
+func (s *redisStore) AddOutOfStockEvent(id, timestamp string) error {
+	ctx := context.Background()
+	key := "stream:" + id + ":out-of-stock"
+	return s.client.Set(ctx, key, timestamp, streamLifetime).Err()
 }
 
 func (s *redisStore) ScoreboardIncr(boardName, userName string, points float64) error {
