@@ -137,72 +137,64 @@ func verifySignature(messageSignature, messageID, messageTimestamp string, body 
 	return hmac.Equal([]byte(expectedSignature), []byte(messageSignature))
 }
 
-func handleStreamOnlineNotification(notification NotificationPayload) {
-	if notification.Subscription.Type != "stream.online" {
-		log.Printf("Error: unexpected subscription type: %s", notification.Subscription.Type)
-		return
-	}
+func handleNotification(notification NotificationPayload) {
+	switch notification.Subscription.Type {
+	case "channel.channel_points_custom_reward_redemption.add":
+		var event ChannelPointsRedemptionEvent
+		if err := json.Unmarshal(notification.Event, &event); err != nil {
+			log.Printf("Error: Failed to parse event: channel.channel_points_custom_reward_redemption.add: %s\n", err)
+			break
+		}
 
-	var event StreamOnlineEvent
-	if err := json.Unmarshal(notification.Event, &event); err != nil {
-		log.Printf("Error: Failed to parse event: stream.online: %s\n", err)
-		return
-	}
+		if shouldAddHeadpat(event) {
+			newCount, err := eventStore.AddPendingEvent("headpat", event.Id)
+			if err != nil {
+				log.Printf("Error: Failed to add headpat event: %s\n", err)
+				break
+			}
 
-	log.Printf("Stream online (id: %s)\n", event.Id)
+			err = scoreboardStore.ScoreboardIncr("headpat", event.UserLogin, 1)
+			if err != nil {
+				log.Printf("Error: Failed to increment scoreboard: %s\n", err)
+			}
 
-	if err := eventStore.AddStreamStartEvent(event.Id, event.StartedAt); err != nil {
-		log.Printf("Error: Failed to add stream start event: %s\n", err)
-	}
+			message := HeadpatMessage{
+				Count:     newCount.Pending,
+				Total:     newCount.Total,
+				Timestamp: string(time.Now().Format(time.RFC3339Nano)),
+			}
 
-	currentStreamId = event.Id
-	ctx, cancel := context.WithTimeout(context.Background(), 600*time.Second)
-	defer cancel()
+			clientsMutex.RLock()
+			for client := range clientsMap {
+				client <- message
+			}
+			clientsMutex.RUnlock()
+		}
 
-	log.Println("Starting headpat poller")
-	go startHeadpatPoller(ctx, cancel)
-
-	<-ctx.Done()
-	log.Println("Headpat poller finished")
-
-	currentStreamId = ""
-}
-
-func handleHeadpatNotification(notification NotificationPayload) {
-	if notification.Subscription.Type != "channel.channel_points_custom_reward_redemption.add" {
-		log.Printf("Error: unexpected subscription type: %s", notification.Subscription.Type)
-		return
-	}
-
-	var event ChannelPointsRedemptionEvent
-	if err := json.Unmarshal(notification.Event, &event); err != nil {
-		log.Printf("Error: Failed to parse event: channel.channel_points_custom_reward_redemption.add: %s\n", err)
-		return
-	}
-
-	if shouldAddHeadpat(event) {
-		newCount, err := eventStore.AddPendingEvent("headpat", event.Id)
-		if err != nil {
-			log.Printf("Error: Failed to add headpat event: %s\n", err)
+	case "stream.online":
+		var event StreamOnlineEvent
+		if err := json.Unmarshal(notification.Event, &event); err != nil {
+			log.Printf("Error: Failed to parse event: stream.online: %s\n", err)
 			return
 		}
 
-		err = scoreboardStore.ScoreboardIncr("headpat", event.UserLogin, 1)
-		if err != nil {
-			log.Printf("Error: Failed to increment scoreboard: %s\n", err)
+		log.Printf("Stream online (id: %s)\n", event.Id)
+
+		if err := eventStore.AddStreamStartEvent(event.Id, event.StartedAt); err != nil {
+			log.Printf("Error: Failed to add stream start event: %s\n", err)
 		}
 
-		message := HeadpatMessage{
-			Count:     newCount.Pending,
-			Total:     newCount.Total,
-			Timestamp: string(time.Now().Format(time.RFC3339Nano)),
-		}
+		currentStreamId = event.Id
+		ctx, cancel := context.WithTimeout(context.Background(), 600*time.Second)
+		defer cancel()
 
-		clientsMutex.RLock()
-		for client := range clientsMap {
-			client <- message
-		}
-		clientsMutex.RUnlock()
+		log.Println("Starting headpat poller")
+		go startHeadpatPoller(ctx, cancel)
+
+		<-ctx.Done()
+		log.Println("Headpat poller finished")
+
+		currentStreamId = ""
 	}
 }
 
@@ -458,11 +450,11 @@ func startHeadpatPoller(ctx context.Context, cancel context.CancelFunc) {
 			}
 
 			reward, err := pollHeadpats()
-			log.Printf("Headpat status: { Redeemed: %v, Out of Stock: %t }\n", reward.RedemptionsRedeemedCurrentStream, !reward.IsInStock)
 			if err != nil {
 				log.Printf("Error occurred while polling headpats: %s\n", err)
 			}
 			if reward != nil {
+				log.Printf("Headpat status: { Redeemed: %v, Out of Stock: %t }\n", reward.RedemptionsRedeemedCurrentStream, !reward.IsInStock)
 				newCount := reward.RedemptionsRedeemedCurrentStream
 				if newCount != nil {
 					eventStore.AddNumRedeemedThisStream(streamId, *newCount)
@@ -889,8 +881,76 @@ func main() {
 		}
 	})
 
-	mux.HandleFunc("POST /notification/headpat", notificationHandler(handleHeadpatNotification))
-	mux.HandleFunc("POST /notification/online", notificationHandler(handleStreamOnlineNotification))
+	mux.HandleFunc("POST /notification", func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			fmt.Fprintf(w, "Failed to read request")
+			log.Printf("Error: Failed to read request: %s\n", err)
+			return
+		}
+
+		messageSignature := r.Header.Get("Twitch-Eventsub-Message-Signature")
+		messageID := r.Header.Get("Twitch-Eventsub-Message-Id")
+		messageTimestamp := r.Header.Get("Twitch-Eventsub-Message-Timestamp")
+
+		if !verifySignature(messageSignature, messageID, messageTimestamp, body) {
+			w.WriteHeader(http.StatusForbidden)
+			log.Println("Failed to verify message")
+			return
+		}
+
+		flusher, _ := w.(http.Flusher)
+
+		messageType := r.Header.Get("Twitch-Eventsub-Message-Type")
+		switch messageType {
+		case "notification":
+			var message NotificationPayload
+			if err = json.Unmarshal(body, &message); err != nil {
+				w.WriteHeader(http.StatusInternalServerError)
+				fmt.Fprintf(w, "Failed to parse JSON")
+				log.Printf("Error: Failed to parse webhook notifiation payload: %s\n", err)
+				break
+			}
+			w.WriteHeader(http.StatusNoContent)
+			flusher.Flush()
+			handleNotification(message)
+
+		case "webhook_callback_verification":
+			type VerificationPayload struct {
+				Subscription Subscription `json:"subscription"`
+				Challenge    string       `json:"challenge"`
+			}
+
+			var message VerificationPayload
+			if err = json.Unmarshal(body, &message); err != nil {
+				w.WriteHeader(http.StatusInternalServerError)
+				fmt.Fprintf(w, "Failed to parse JSON")
+				log.Printf("Error: Failed to parse webhook verification payload: %s\n", err)
+				break
+			}
+
+			log.Println("Verifying subscription:", message.Subscription.Type)
+			w.Header().Set("Content-Type", "text/plain")
+			fmt.Fprint(w, message.Challenge)
+
+		case "revocation":
+			type RevocationPayload struct {
+				Subscription Subscription `json:"subscription"`
+			}
+
+			var message RevocationPayload
+			if err = json.Unmarshal(body, &message); err != nil {
+				w.WriteHeader(http.StatusInternalServerError)
+				fmt.Fprintf(w, "Failed to parse JSON")
+				log.Printf("Error: Failed to parse webhook revocation payload: %s\n", err)
+				break
+			}
+
+			w.WriteHeader(http.StatusNoContent)
+			log.Println("Subscription revoked:", message.Subscription.Type, message.Subscription.Status)
+		}
+	})
 
 	clientsMap = make(map[chan HeadpatMessage]bool, 2)
 
