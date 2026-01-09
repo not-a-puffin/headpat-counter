@@ -455,16 +455,16 @@ func startHeadpatPoller(ctx context.Context, cancel context.CancelFunc) {
 			}
 			if reward != nil {
 				log.Printf("Headpat status: { Redeemed: %v, Out of Stock: %t }\n", reward.RedemptionsRedeemedCurrentStream, !reward.IsInStock)
-				newCount := reward.RedemptionsRedeemedCurrentStream
-				if newCount != nil {
-					eventStore.AddNumRedeemedThisStream(streamId, *newCount)
-				}
-				if !reward.IsInStock {
-					log.Println("Headpats out of stock!")
-					timestamp := string(time.Now().Format(time.RFC3339Nano))
-					eventStore.AddOutOfStockEvent(streamId, timestamp)
-					cancel()
-					return
+				count := reward.RedemptionsRedeemedCurrentStream
+				if count != nil && *count > 0 {
+					eventStore.AddNumRedeemedThisStream(streamId, *count)
+					if !reward.IsInStock {
+						log.Println("Headpats out of stock!")
+						timestamp := string(time.Now().Format(time.RFC3339Nano))
+						eventStore.AddOutOfStockEvent(streamId, timestamp)
+						cancel()
+						return
+					}
 				}
 			}
 
