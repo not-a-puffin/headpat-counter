@@ -107,8 +107,7 @@ func closeClient(client chan HeadpatMessage) {
 func shouldAddHeadpat(event ChannelPointsRedemptionEvent) bool {
 	// Skip notifications that are older than 10 minutes
 	timestamp, _ := time.Parse(time.RFC3339Nano, event.RedeemedAt)
-	duration := time.Since(timestamp)
-	if duration > 10*time.Minute {
+	if time.Since(timestamp) > 10*time.Minute {
 		log.Println("Skipping event older than 10 minutes")
 		return false
 	}
@@ -178,23 +177,20 @@ func handleNotification(notification NotificationPayload) {
 			return
 		}
 
-		log.Printf("Stream online (id: %s)\n", event.Id)
+		log.Printf("Stream online { id: %s }\n", event.Id)
 
 		if err := eventStore.AddStreamStartEvent(event.Id, event.StartedAt); err != nil {
 			log.Printf("Error: Failed to add stream start event: %s\n", err)
 		}
 
 		currentStreamId = event.Id
-		ctx, cancel := context.WithTimeout(context.Background(), 600*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), 300*time.Second)
 		defer cancel()
 
-		log.Println("Starting headpat poller")
-		go startHeadpatPoller(ctx, cancel)
-
+		log.Printf("Starting headpat poller (streamId: %s)\n", event.Id)
+		go startHeadpatPoller(ctx, cancel, event.Id)
 		<-ctx.Done()
-		log.Println("Headpat poller finished")
-
-		currentStreamId = ""
+		log.Printf("Headpat poller finished (streamId: %s)\n", event.Id)
 	}
 }
 
@@ -203,16 +199,23 @@ type contextKey int
 const (
 	contextKeyAuth      contextKey    = iota + 1
 	cookieLifetime      time.Duration = 24 * time.Hour * 180
-	cookieNameDev       string        = "dev_token"
 	cookieName          string        = "green_haired_catgirl_token"
+	cookieNameDev       string        = "dev_token"
 	cookieRefreshWindow time.Duration = 24 * time.Hour * 30
 	keepaliveDuration   time.Duration = 30 * time.Second
 	oauthURL            string        = "https://id.twitch.tv/oauth2/token"
-	tokenName           string        = "green_haired_catgirl_token"
 )
+
+func getCookieName() string {
+	if isDev {
+		return cookieNameDev
+	}
+	return cookieName
+}
 
 func authMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		log.Printf("Authorizing request to %s\n", r.URL)
 		hasActiveSession := false
 		cookieName := getCookieName()
 		cookie, _ := r.Cookie(cookieName)
@@ -444,45 +447,49 @@ type CustomRewardResult struct {
 	Data []CustomReward `json:"data"`
 }
 
-func startHeadpatPoller(ctx context.Context, cancel context.CancelFunc) {
-	time.Sleep(10 * time.Second)
+func doHeadpatPoll(streamId string) bool {
+	if currentStreamId != streamId {
+		log.Println("Stopping headpat poller due to old stream ID")
+		return false
+	}
 
-	ticker := time.NewTicker(5 * time.Second)
+	reward, err := pollHeadpats()
+	if err != nil {
+		log.Printf("Error occurred while polling headpats: %s\n", err)
+	}
+	if reward != nil {
+		if reward.RedemptionsRedeemedCurrentStream == nil {
+			log.Printf("Headpat status: { Redeemed: nil, Out of Stock: %t }\n", !reward.IsInStock)
+		} else {
+			count := *reward.RedemptionsRedeemedCurrentStream
+			log.Printf("Headpat status: { Redeemed: %v, Out of Stock: %t }\n", count, !reward.IsInStock)
+			eventStore.AddNumRedeemedThisStream(streamId, count)
+			if count > 0 && !reward.IsInStock {
+				log.Println("Headpats out of stock!")
+				timestamp := string(time.Now().Format(time.RFC3339Nano))
+				eventStore.AddOutOfStockEvent(streamId, timestamp)
+				return false
+			}
+		}
+	}
+	return true
+}
+
+func startHeadpatPoller(ctx context.Context, cancel context.CancelFunc, streamId string) {
+	ticker := time.NewTicker(2 * time.Second)
 	defer ticker.Stop()
 
-	streamId := currentStreamId
+	shouldContinue := doHeadpatPoll(streamId)
 
-	for {
+	for shouldContinue {
 		select {
 		case <-ticker.C:
-			if currentStreamId != streamId {
-				cancel()
-				return
-			}
-
-			reward, err := pollHeadpats()
-			if err != nil {
-				log.Printf("Error occurred while polling headpats: %s\n", err)
-			}
-			if reward != nil {
-				log.Printf("Headpat status: { Redeemed: %v, Out of Stock: %t }\n", reward.RedemptionsRedeemedCurrentStream, !reward.IsInStock)
-				count := reward.RedemptionsRedeemedCurrentStream
-				if count != nil && *count > 0 {
-					eventStore.AddNumRedeemedThisStream(streamId, *count)
-					if !reward.IsInStock {
-						log.Println("Headpats out of stock!")
-						timestamp := string(time.Now().Format(time.RFC3339Nano))
-						eventStore.AddOutOfStockEvent(streamId, timestamp)
-						cancel()
-						return
-					}
-				}
-			}
-
+			shouldContinue = doHeadpatPoll(streamId)
 		case <-ctx.Done():
 			return
 		}
 	}
+	cancel()
 }
 
 func pollHeadpats() (*CustomReward, error) {
