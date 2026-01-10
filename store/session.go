@@ -12,11 +12,9 @@ import (
 	"time"
 )
 
-// Set lifetime to zero for no expiration
-const sessionLifetime time.Duration = 0
-
 type Session struct {
-	UserId string `json:"user_id"`
+	UserId  string    `json:"user_id"`
+	Expires time.Time `json:"expires"`
 }
 
 type TokenPair struct {

@@ -54,7 +54,7 @@ func (s redisStore) SetSession(token string, session Session) error {
 
 	ctx := context.Background()
 	key := "session:" + token
-	return s.client.Set(ctx, key, bytes, sessionLifetime).Err()
+	return s.client.Set(ctx, key, bytes, 0).Err()
 }
 
 func (s redisStore) DeleteSession(token string) error {

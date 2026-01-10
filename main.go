@@ -202,8 +202,10 @@ type contextKey int
 
 const (
 	contextKeyAuth      contextKey    = iota + 1
-	cookieLifetime      time.Duration = 24 * 180 * time.Hour
-	cookieRefreshWindow time.Duration = 24 * 30 * time.Hour
+	cookieLifetime      time.Duration = 24 * time.Hour * 180
+	cookieNameDev       string        = "dev_token"
+	cookieName          string        = "green_haired_catgirl_token"
+	cookieRefreshWindow time.Duration = 24 * time.Hour * 30
 	keepaliveDuration   time.Duration = 30 * time.Second
 	oauthURL            string        = "https://id.twitch.tv/oauth2/token"
 	tokenName           string        = "green_haired_catgirl_token"
@@ -212,19 +214,28 @@ const (
 func authMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		hasActiveSession := false
-		cookie, _ := r.Cookie(tokenName)
-		if cookie != nil {
-			hasActiveSession = sessionStore.ContainsSession(cookie.Value)
-			if hasActiveSession && time.Until(cookie.Expires) < cookieRefreshWindow {
-				log.Println("Setting cookie")
-				http.SetCookie(w, &http.Cookie{
-					Name:     tokenName,
-					Path:     "/",
-					Value:    cookie.Value,
-					HttpOnly: true,
-					Secure:   !isDev,
-					Expires:  time.Now().Add(cookieLifetime),
-				})
+		cookieName := getCookieName()
+		cookie, _ := r.Cookie(cookieName)
+		if cookie == nil {
+			log.Println("Authorization failed: No session cookie")
+		} else {
+			session, _ := sessionStore.GetSession(cookie.Value)
+			if session == nil {
+				log.Println("Authorization failed: No active sessions found")
+			} else {
+				log.Printf("Found session: { user: %s, expires: %s } ", session.UserId, session.Expires.Format(time.RFC3339))
+				hasActiveSession = true
+				if time.Until(session.Expires) < cookieRefreshWindow {
+					log.Println("Refreshing session cookie")
+					http.SetCookie(w, &http.Cookie{
+						Name:     cookieName,
+						Path:     "/",
+						Value:    cookie.Value,
+						HttpOnly: true,
+						Secure:   !isDev,
+						Expires:  time.Now().Add(cookieLifetime),
+					})
+				}
 			}
 		}
 		ctx := context.WithValue(r.Context(), contextKeyAuth, hasActiveSession)
@@ -701,9 +712,11 @@ func main() {
 			return
 		}
 
+		cookieExpiresAt := time.Now().Add(cookieLifetime)
 		sessionToken := generateSessionToken()
 		session := store.Session{
-			UserId: user.Id,
+			UserId:  user.Id,
+			Expires: cookieExpiresAt,
 		}
 		if err = sessionStore.SetSession(sessionToken, session); err != nil {
 			log.Printf("Error: failed to save session: %s\n", err)
@@ -717,14 +730,14 @@ func main() {
 			log.Printf("Error: failed to save user access token pair: %s\n", err)
 		}
 
-		log.Println("Setting cookie")
+		log.Println("Setting session cookie")
 		http.SetCookie(w, &http.Cookie{
-			Name:     tokenName,
+			Name:     cookieName,
 			Value:    sessionToken,
 			Path:     "/",
 			HttpOnly: true,
 			Secure:   !isDev,
-			Expires:  time.Now().Add(cookieLifetime),
+			Expires:  cookieExpiresAt,
 		})
 	})
 
