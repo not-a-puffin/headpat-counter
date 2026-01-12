@@ -8,29 +8,35 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
+type Store interface {
+	HeadpatStore
+	ScoreboardStore
+	SessionStore
+	StreamStore
+	TokenStore
+}
+
 type redisStore struct {
 	client *redis.Client
 }
 
-type MultiStore interface {
-	EventStore
-	SessionStore
-	ScoreboardStore
-}
+const (
+	redisHostAddr string = "localhost:6379"
+)
 
-func NewRedisStore() MultiStore {
+func NewRedisStore() Store {
 	rdb := redis.NewClient(&redis.Options{
-		Addr: "localhost:6379",
+		Addr: redisHostAddr,
 	})
 	return &redisStore{
 		client: rdb,
 	}
 }
 
-func (s redisStore) GetSession(token string) (*Session, error) {
+func (st redisStore) GetSession(token string) (*Session, error) {
 	ctx := context.Background()
 	key := "session:" + token
-	bytes, err := s.client.Get(ctx, key).Bytes()
+	bytes, err := st.client.Get(ctx, key).Bytes()
 	if err == redis.Nil {
 		return nil, nil
 	}
@@ -46,7 +52,7 @@ func (s redisStore) GetSession(token string) (*Session, error) {
 	return &session, nil
 }
 
-func (s redisStore) SetSession(token string, session Session) error {
+func (st redisStore) SetSession(token string, session Session) error {
 	bytes, err := json.Marshal(session)
 	if err != nil {
 		return err
@@ -54,26 +60,26 @@ func (s redisStore) SetSession(token string, session Session) error {
 
 	ctx := context.Background()
 	key := "session:" + token
-	return s.client.Set(ctx, key, bytes, 0).Err()
+	return st.client.Set(ctx, key, bytes, 0).Err()
 }
 
-func (s redisStore) DeleteSession(token string) error {
+func (st redisStore) DeleteSession(token string) error {
 	ctx := context.Background()
 	key := "session:" + token
-	return s.client.Unlink(ctx, key).Err()
+	return st.client.Unlink(ctx, key).Err()
 }
 
-func (s redisStore) ContainsSession(token string) bool {
+func (st redisStore) ContainsSession(token string) bool {
 	ctx := context.Background()
 	key := "session:" + token
-	count := s.client.Exists(ctx, key).Val()
+	count := st.client.Exists(ctx, key).Val()
 	return count > 0
 }
 
-func (s redisStore) GetTokenPair(id string) (*TokenPair, error) {
+func (st redisStore) GetTokenPair(id string) (*TokenPair, error) {
 	ctx := context.Background()
 	key := "token:" + id
-	bytes, err := s.client.Get(ctx, key).Bytes()
+	bytes, err := st.client.Get(ctx, key).Bytes()
 	if err == redis.Nil {
 		return nil, nil
 	}
@@ -89,7 +95,7 @@ func (s redisStore) GetTokenPair(id string) (*TokenPair, error) {
 	return &tokenPair, nil
 }
 
-func (s redisStore) SetTokenPair(id string, tokenPair TokenPair) error {
+func (st redisStore) SetTokenPair(id string, tokenPair TokenPair) error {
 	bytes, err := encodeTokenPair(tokenPair)
 	if err != nil {
 		return err
@@ -99,10 +105,10 @@ func (s redisStore) SetTokenPair(id string, tokenPair TokenPair) error {
 	key := "token:" + id
 
 	// Token does not expire
-	return s.client.Set(ctx, key, bytes, 0).Err()
+	return st.client.Set(ctx, key, bytes, 0).Err()
 }
 
-func (s *redisStore) AddPendingEvent(eventName, id string) (EventCount, error) {
+func (s *redisStore) AddPendingEvent(eventName, id string) (HeadpatCount, error) {
 	ctx := context.Background()
 
 	pendingKey := "event:" + eventName + ":pending"
@@ -121,10 +127,10 @@ func (s *redisStore) AddPendingEvent(eventName, id string) (EventCount, error) {
 	}, pendingKey, totalKey, idKey)
 
 	if err != nil {
-		return EventCount{}, err
+		return HeadpatCount{}, err
 	}
 
-	count := EventCount{
+	count := HeadpatCount{
 		Pending: int(pendingCmd.Val()),
 		Total:   int(totalCmd.Val()),
 	}
@@ -138,19 +144,19 @@ func (s *redisStore) EventExists(eventName, id string) bool {
 	return count > 0
 }
 
-func (s *redisStore) FulfillEvent(eventName string, number int) (EventCount, error) {
+func (s *redisStore) FulfillEvent(eventName string, number int) (HeadpatCount, error) {
 	ctx := context.Background()
 
 	pendingKey := "event:" + eventName + ":pending"
 	pending, err := s.client.Get(ctx, pendingKey).Int()
 	if err != nil && err != redis.Nil {
-		return EventCount{}, err
+		return HeadpatCount{}, err
 	}
 
 	totalKey := "event:" + eventName + ":total"
 	total, err := s.client.Get(ctx, totalKey).Int()
 	if err != nil && err != redis.Nil {
-		return EventCount{}, err
+		return HeadpatCount{}, err
 	}
 
 	var numFulfilled int
@@ -161,37 +167,37 @@ func (s *redisStore) FulfillEvent(eventName string, number int) (EventCount, err
 	}
 
 	if numFulfilled == 0 {
-		return EventCount{}, NoChange
+		return HeadpatCount{}, NoChange
 	}
 
 	val, err := s.client.DecrBy(ctx, pendingKey, int64(numFulfilled)).Result()
 	if err != nil {
-		return EventCount{}, err
+		return HeadpatCount{}, err
 	}
 
-	count := EventCount{
+	count := HeadpatCount{
 		Pending: int(val),
 		Total:   total,
 	}
 	return count, nil
 }
 
-func (s *redisStore) EventCount(eventName string) (EventCount, error) {
+func (s *redisStore) GetHeadpatCount(eventName string) (HeadpatCount, error) {
 	ctx := context.Background()
 
 	pendingKey := "event:" + eventName + ":pending"
 	pending, err := s.client.Get(ctx, pendingKey).Int()
 	if err != nil && err != redis.Nil {
-		return EventCount{}, err
+		return HeadpatCount{}, err
 	}
 
 	totalKey := "event:" + eventName + ":total"
 	total, err := s.client.Get(ctx, totalKey).Int()
 	if err != nil && err != redis.Nil {
-		return EventCount{}, err
+		return HeadpatCount{}, err
 	}
 
-	count := EventCount{
+	count := HeadpatCount{
 		Pending: pending,
 		Total:   total,
 	}

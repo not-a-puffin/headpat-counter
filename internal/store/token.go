@@ -9,24 +9,14 @@ import (
 	"errors"
 	"io"
 	"os"
-	"time"
 )
-
-type Session struct {
-	UserId  string    `json:"user_id"`
-	Expires time.Time `json:"expires"`
-}
 
 type TokenPair struct {
 	Access  string `json:"access"`
 	Refresh string `json:"refresh"`
 }
 
-type SessionStore interface {
-	SetSession(token string, session Session) error
-	GetSession(token string) (*Session, error)
-	DeleteSession(token string) error
-	ContainsSession(token string) bool
+type TokenStore interface {
 	SetTokenPair(id string, tokenPair TokenPair) error
 	GetTokenPair(id string) (*TokenPair, error)
 }
