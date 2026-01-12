@@ -128,26 +128,8 @@ func (h *AuthHandler) IsAuthorized(w http.ResponseWriter, r *http.Request) bool 
 
 func (h *AuthHandler) Middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		log.Printf("Authorizing request to %s\n", r.URL)
-		hasActiveSession := false
-		cookie, _ := r.Cookie(h.cookieName)
-		if cookie == nil {
-			log.Println("Authorization failed: No session cookie")
-		} else {
-			session, _ := h.st.GetSession(cookie.Value)
-			if session == nil {
-				log.Println("Authorization failed: No active sessions found")
-			} else {
-				log.Printf("Found session: { user: %s, expires: %s } ", session.UserId, session.Expires.Format(time.RFC3339))
-				hasActiveSession = true
-				if time.Until(session.Expires) < cookieRefreshWindow {
-					log.Println("Refreshing session cookie")
-					cookie := h.createCookie(cookie.Value)
-					http.SetCookie(w, &cookie)
-				}
-			}
-		}
-		ctx := context.WithValue(r.Context(), contextKeyAuth, hasActiveSession)
+		hasAuth := h.IsAuthorized(w, r)
+		ctx := context.WithValue(r.Context(), contextKeyAuth, hasAuth)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }

@@ -19,12 +19,6 @@ func New(port string) *http.Server {
 		fmt.Println("Starting server in development mode")
 	}
 
-	fs := http.FileServer(http.Dir("client"))
-	mux.Handle("/overlay/", fs)
-	mux.Handle("/favicon.ico", fs)
-	mux.Handle("/favicon.svg", fs)
-	mux.Handle("/favicon-96x96.png", fs)
-
 	authHandler := handler.NewAuthHandler(&cfg, st)
 	mux.HandleFunc("/auth/connect", authHandler.ConnectToTwitch)
 	mux.HandleFunc("/auth/callback", authHandler.Callback)
@@ -39,37 +33,45 @@ func New(port string) *http.Server {
 	mux.Handle("POST /headpat/fulfill", authHandler.Middleware(http.HandlerFunc(headpatHandler.Fulfill)))
 	mux.HandleFunc("/headpat/events", headpatHandler.Events)
 
-	mux.Handle("/auth/", authHandler.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if handler.HasAuth(r) {
-			http.Redirect(w, r, "/control-panel/", http.StatusSeeOther)
-		} else {
-			http.ServeFile(w, r, "client/auth")
-		}
-	})))
+	fs := http.FileServer(http.Dir("client"))
+	mux.Handle("/auth/", authHandler.Middleware(RedirectIfAuth(fs)))
+	mux.Handle("/control-panel/", authHandler.Middleware(RequireAuth(fs)))
+	mux.Handle("/overlay/", fs)
+	mux.Handle("/favicon.ico", fs)
+	mux.Handle("/favicon.svg", fs)
+	mux.Handle("/favicon-96x96.png", fs)
 
-	mux.Handle("/control-panel/", authHandler.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if handler.HasAuth(r) {
-			http.ServeFile(w, r, "client/control-panel")
-		} else {
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/":
 			http.Redirect(w, r, "/auth/", http.StatusSeeOther)
-		}
-	})))
-
-	mux.Handle("/", authHandler.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/" {
+		default:
 			http.NotFound(w, r)
-			return
 		}
-
-		if handler.HasAuth(r) {
-			http.Redirect(w, r, "/control-panel/", http.StatusSeeOther)
-		} else {
-			http.Redirect(w, r, "/auth/", http.StatusSeeOther)
-		}
-	})))
+	})
 
 	return &http.Server{
 		Addr:    ":" + port,
 		Handler: mux,
 	}
+}
+
+func RedirectIfAuth(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if handler.HasAuth(r) && r.URL.Path == "/auth/" {
+			http.Redirect(w, r, "/control-panel/", http.StatusSeeOther)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func RequireAuth(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !handler.HasAuth(r) {
+			http.Redirect(w, r, "/auth/", http.StatusSeeOther)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }
