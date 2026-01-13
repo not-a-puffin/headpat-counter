@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"headpat-counter/internal/client"
-	"headpat-counter/internal/config"
 	"headpat-counter/internal/store"
 	"io"
 	"log"
@@ -13,19 +12,9 @@ import (
 	"time"
 )
 
-type HeadpatHandler struct {
-	cfg *config.AppConfig
-	st  store.Store
-	cm  *client.ClientManager
-}
-
 const keepaliveDuration time.Duration = 30 * time.Second
 
-func NewHeadpatHandler(cfg *config.AppConfig, cm *client.ClientManager, st store.Store) *HeadpatHandler {
-	return &HeadpatHandler{cfg: cfg, cm: cm, st: st}
-}
-
-func (h *HeadpatHandler) GetCount(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) GetCount(w http.ResponseWriter, r *http.Request) {
 	count, err := h.st.GetHeadpatCount("headpat")
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
@@ -42,7 +31,7 @@ func (h *HeadpatHandler) GetCount(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(message)
 }
 
-func (h *HeadpatHandler) GetLeaderboard(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) GetLeaderboard(w http.ResponseWriter, r *http.Request) {
 	countStr := r.URL.Query().Get("count")
 	count, err := strconv.Atoi(countStr)
 	if err != nil || count < 1 {
@@ -68,7 +57,7 @@ func (h *HeadpatHandler) GetLeaderboard(w http.ResponseWriter, r *http.Request) 
 	}
 }
 
-func (h *HeadpatHandler) GetLeaderboardRankForUser(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) GetLeaderboardRankForUser(w http.ResponseWriter, r *http.Request) {
 	userString := r.PathValue("user")
 	score, err := h.st.GetScoreByUser("headpat", userString)
 	if err != nil {
@@ -88,7 +77,7 @@ func (h *HeadpatHandler) GetLeaderboardRankForUser(w http.ResponseWriter, r *htt
 	fmt.Fprintf(w, "You are ranked %d with %d headpats redeemed girldmHeadpat \n", score.Rank, int(score.Score))
 }
 
-func (h *HeadpatHandler) Events(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) Events(w http.ResponseWriter, r *http.Request) {
 	client := h.cm.NewClient()
 	defer h.cm.CloseClient(client)
 
@@ -118,7 +107,7 @@ func (h *HeadpatHandler) Events(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (h *HeadpatHandler) Fulfill(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) Fulfill(w http.ResponseWriter, r *http.Request) {
 	if !HasAuth(r) {
 		w.WriteHeader(http.StatusUnauthorized)
 		fmt.Fprintf(w, "Unauthorized")

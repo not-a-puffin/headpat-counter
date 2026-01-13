@@ -75,7 +75,7 @@ func (p *HeadpatPoller) doPoll() bool {
 func (p *HeadpatPoller) Start(ctx context.Context) {
 	log.Printf("HeadpatPoller(streamId: %s) Starting\n", p.streamId)
 
-	ticker := time.NewTicker(2 * time.Second)
+	ticker := time.NewTicker(p.cfg.PollerFrequency)
 	defer ticker.Stop()
 
 	shouldContinue := p.doPoll()

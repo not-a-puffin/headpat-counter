@@ -3,4 +3,4 @@
 set -euo pipefail
 
 export MODE=DEV
-export $(cat .env | xargs) && go run .
+export $(cat .env-dev | xargs) && go run .

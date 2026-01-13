@@ -8,9 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"headpat-counter/internal/client"
-	"headpat-counter/internal/config"
 	"headpat-counter/internal/poller"
-	"headpat-counter/internal/store"
 	"io"
 	"log"
 	"net/http"
@@ -64,17 +62,7 @@ type NotificationPayload struct {
 	Event        json.RawMessage `json:"event"`
 }
 
-type EventsubHandler struct {
-	cfg *config.AppConfig
-	st  store.Store
-	cm  *client.ClientManager
-}
-
-func NewEventsubHandler(cfg *config.AppConfig, cm *client.ClientManager, st store.Store) *EventsubHandler {
-	return &EventsubHandler{cfg: cfg, cm: cm, st: st}
-}
-
-func (h *EventsubHandler) Callback(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) EventsubCallback(w http.ResponseWriter, r *http.Request) {
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
@@ -145,7 +133,7 @@ func (h *EventsubHandler) Callback(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (h *EventsubHandler) handleNotification(notification NotificationPayload) {
+func (h *Handler) handleNotification(notification NotificationPayload) {
 	switch notification.Subscription.Type {
 	case "channel.channel_points_custom_reward_redemption.add":
 		var event ChannelPointsRedemptionEvent
@@ -186,14 +174,7 @@ func (h *EventsubHandler) handleNotification(notification NotificationPayload) {
 			log.Printf("Error: Failed to add stream start event: %s\n", err)
 		}
 
-		var pollerDuration time.Duration
-		if h.cfg.IsDev() {
-			pollerDuration = 5 * time.Second
-		} else {
-			pollerDuration = 10 * time.Minute
-		}
-
-		ctx, cancel := context.WithTimeout(context.Background(), pollerDuration)
+		ctx, cancel := context.WithTimeout(context.Background(), h.cfg.PollerTimeout)
 		defer cancel()
 
 		poller.CurrentStreamId = event.Id
@@ -203,7 +184,7 @@ func (h *EventsubHandler) handleNotification(notification NotificationPayload) {
 	}
 }
 
-func (h *EventsubHandler) shouldAddHeadpat(event ChannelPointsRedemptionEvent) bool {
+func (h *Handler) shouldAddHeadpat(event ChannelPointsRedemptionEvent) bool {
 	// Skip notifications that are older than 10 minutes
 	timestamp, _ := time.Parse(time.RFC3339Nano, event.RedeemedAt)
 	if time.Since(timestamp) > 10*time.Minute {

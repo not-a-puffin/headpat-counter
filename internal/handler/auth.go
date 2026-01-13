@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/base64"
-	"headpat-counter/internal/config"
 	"headpat-counter/internal/request"
 	"headpat-counter/internal/store"
 	"log"
@@ -12,12 +11,6 @@ import (
 	"net/url"
 	"time"
 )
-
-type AuthHandler struct {
-	cfg        *config.AppConfig
-	st         store.Store
-	cookieName string
-}
 
 type contextKey int
 
@@ -32,17 +25,7 @@ func HasAuth(r *http.Request) bool {
 	return ok && auth
 }
 
-func NewAuthHandler(cfg *config.AppConfig, st store.Store) *AuthHandler {
-	var cookie string
-	if cfg.IsDev() {
-		cookie = "dev_token"
-	} else {
-		cookie = "green_haired_catgirl_token"
-	}
-	return &AuthHandler{cfg: cfg, st: st, cookieName: cookie}
-}
-
-func (h *AuthHandler) ConnectToTwitch(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) ConnectToTwitch(w http.ResponseWriter, r *http.Request) {
 	oauthURL := "https://id.twitch.tv/oauth2/authorize"
 	params := url.Values{}
 	params.Add("client_id", h.cfg.AppClientId)
@@ -53,7 +36,7 @@ func (h *AuthHandler) ConnectToTwitch(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, url, http.StatusSeeOther)
 }
 
-func (h *AuthHandler) Callback(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) AuthCallback(w http.ResponseWriter, r *http.Request) {
 	defer http.Redirect(w, r, "/auth/", http.StatusSeeOther)
 
 	log.Println("Received auth callback")
@@ -103,8 +86,8 @@ func (h *AuthHandler) Callback(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (h *AuthHandler) IsAuthorized(w http.ResponseWriter, r *http.Request) bool {
-	cookie, _ := r.Cookie(h.cookieName)
+func (h *Handler) IsAuthorized(w http.ResponseWriter, r *http.Request) bool {
+	cookie, _ := r.Cookie(h.cfg.CookieName)
 	if cookie == nil {
 		log.Println("Unauthorized: No session cookie")
 		return false
@@ -126,7 +109,7 @@ func (h *AuthHandler) IsAuthorized(w http.ResponseWriter, r *http.Request) bool 
 	return true
 }
 
-func (h *AuthHandler) Middleware(next http.Handler) http.Handler {
+func (h *Handler) AuthMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		hasAuth := h.IsAuthorized(w, r)
 		ctx := context.WithValue(r.Context(), contextKeyAuth, hasAuth)
@@ -141,9 +124,9 @@ func generateSessionToken() string {
 	return token
 }
 
-func (h *AuthHandler) createCookie(value string) http.Cookie {
+func (h *Handler) createCookie(value string) http.Cookie {
 	return http.Cookie{
-		Name:     h.cookieName,
+		Name:     h.cfg.CookieName,
 		Path:     "/",
 		Value:    value,
 		HttpOnly: true,
