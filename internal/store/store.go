@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -168,17 +169,19 @@ func (s *redisStore) AddRemainingHeadpats(streamId string, count int) error {
 		return err
 	}
 
-	diff := count - max(count, countThisStream)
+	diff := int64(max(count-countThisStream, 0))
 	if diff == 0 {
 		return NoChange
 	}
+
+	log.Printf("Adding %d remaining headpats", diff)
 
 	pendingKey := "event:headpat:pending"
 	totalKey := "event:headpat:total"
 	err := s.client.Watch(ctx, func(tx *redis.Tx) error {
 		_, err := tx.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
-			pipe.Incr(ctx, pendingKey)
-			pipe.Incr(ctx, totalKey)
+			pipe.IncrBy(ctx, pendingKey, diff)
+			pipe.IncrBy(ctx, totalKey, diff)
 			return nil
 		})
 		return err

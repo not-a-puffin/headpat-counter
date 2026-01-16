@@ -81,17 +81,16 @@ func (p *HeadpatPoller) Start(ctx context.Context) {
 	ticker := time.NewTicker(p.cfg.PollerFrequency)
 	defer ticker.Stop()
 
-	shouldContinue := p.doPoll()
-
-	for shouldContinue {
+	for {
 		select {
 		case <-ticker.C:
-			shouldContinue = p.doPoll()
+			if !p.doPoll() {
+				log.Printf("HeadpatPoller(streamId: %s) Finished\n", p.streamId)
+				return
+			}
 		case <-ctx.Done():
-			goto finish
+			log.Printf("HeadpatPoller(streamId: %s) Timeout\n", p.streamId)
+			return
 		}
 	}
-
-finish:
-	log.Printf("HeadpatPoller(streamId: %s) Finished\n", p.streamId)
 }
