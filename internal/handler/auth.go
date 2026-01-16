@@ -89,13 +89,13 @@ func (h *Handler) AuthCallback(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) IsAuthorized(w http.ResponseWriter, r *http.Request) bool {
 	cookie, _ := r.Cookie(h.cfg.CookieName)
 	if cookie == nil {
-		log.Println("Unauthorized: No session cookie")
+		// log.Println("Unauthorized: No session cookie")
 		return false
 	}
 
 	session, _ := h.st.GetSession(cookie.Value)
 	if session == nil {
-		log.Println("Unauthorized: No active sessions found")
+		// log.Println("Unauthorized: No active sessions found")
 		return false
 	}
 

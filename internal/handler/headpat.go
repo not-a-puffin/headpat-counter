@@ -15,7 +15,7 @@ import (
 const keepaliveDuration time.Duration = 30 * time.Second
 
 func (h *Handler) GetCount(w http.ResponseWriter, r *http.Request) {
-	count, err := h.st.GetHeadpatCount("headpat")
+	count, err := h.st.GetHeadpatCount()
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
 		fmt.Fprintf(w, "Failed to get headpat count")
@@ -134,7 +134,7 @@ func (h *Handler) Fulfill(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	count, err := h.st.FulfillEvent("headpat", req.Amount)
+	count, err := h.st.FulfillHeadpats(req.Amount)
 	if err == store.NoChange {
 		w.WriteHeader(http.StatusNoContent)
 		return

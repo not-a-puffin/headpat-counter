@@ -143,7 +143,7 @@ func (h *Handler) handleNotification(notification NotificationPayload) {
 		}
 
 		if h.shouldAddHeadpat(event) {
-			newCount, err := h.st.AddPendingEvent("headpat", event.Id)
+			newCount, err := h.st.AddPendingHeadpat(event.Id)
 			if err != nil {
 				log.Printf("Error: Failed to add headpat event: %s\n", err)
 				break
@@ -170,7 +170,13 @@ func (h *Handler) handleNotification(notification NotificationPayload) {
 
 		log.Printf("Stream online { id: %s }\n", event.Id)
 
-		if err := h.st.AddStreamStartEvent(event.Id, event.StartedAt); err != nil {
+		timestamp, err := time.Parse(time.RFC3339, event.StartedAt)
+		if err != nil {
+			log.Printf("Error: Failed to parse stream.online timestamp: %s\n", err)
+			return
+		}
+
+		if err := h.st.AddStreamStartEvent(event.Id, timestamp); err != nil {
 			log.Printf("Error: Failed to add stream start event: %s\n", err)
 		}
 
@@ -181,6 +187,25 @@ func (h *Handler) handleNotification(notification NotificationPayload) {
 		headpatPoller := poller.NewHeadpatPoller(h.cfg, h.st, event.Id)
 		go headpatPoller.Start(ctx)
 		<-ctx.Done()
+
+		// Add one final headpat message
+		count, err := h.st.GetHeadpatCount()
+		if err != nil {
+			log.Printf("Error: Failed to get headpat count: %s\n", err)
+			return
+		}
+		message := client.HeadpatMessage{
+			Count:     count.Pending,
+			Total:     count.Total,
+			Timestamp: string(time.Now().Format(time.RFC3339Nano)),
+		}
+		h.cm.SendAll(message)
+
+		// Reset stream headpats
+		err = h.st.ResetScoreboard("stream:headpats")
+		if err != nil {
+			log.Printf("Error: failed to reset stream headpats: %s", err)
+		}
 	}
 }
 
@@ -199,8 +224,14 @@ func (h *Handler) shouldAddHeadpat(event ChannelPointsRedemptionEvent) bool {
 	}
 
 	// Skip this headpat if it has already been counted
-	if h.st.EventExists("headpat", event.Id) {
-		log.Println("Skipping event that was already recorded")
+	if h.st.HeadpatExists(event.Id) {
+		log.Println("Skipping headpat that was already recorded")
+		return false
+	}
+
+	// Skip this headpat if the reward is out-of-stock
+	if h.st.IsOutOfStock() {
+		log.Println("Skipping headpat: already out of stock")
 		return false
 	}
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"time"
 
 	"github.com/redis/go-redis/v9"
 )
@@ -108,12 +109,15 @@ func (st redisStore) SetTokenPair(id string, tokenPair TokenPair) error {
 	return st.client.Set(ctx, key, bytes, 0).Err()
 }
 
-func (s *redisStore) AddPendingEvent(eventName, id string) (HeadpatCount, error) {
+func (s *redisStore) AddPendingHeadpat(id string) (HeadpatCount, error) {
 	ctx := context.Background()
 
-	pendingKey := "event:" + eventName + ":pending"
-	totalKey := "event:" + eventName + ":total"
-	idKey := "event:" + eventName + ":id:" + id
+	pendingKey := "event:headpat:pending"
+	totalKey := "event:headpat:total"
+	idKey := "event:headpat:id:" + id
+	setKey := "stream:headpats"
+	ts := time.Now().Unix()
+	entry := redis.Z{Member: id, Score: float64(ts)}
 	var pendingCmd, totalCmd *redis.IntCmd
 
 	err := s.client.Watch(ctx, func(tx *redis.Tx) error {
@@ -121,10 +125,11 @@ func (s *redisStore) AddPendingEvent(eventName, id string) (HeadpatCount, error)
 			pendingCmd = pipe.Incr(ctx, pendingKey)
 			totalCmd = pipe.Incr(ctx, totalKey)
 			pipe.Set(ctx, idKey, "", eventLifetime)
+			pipe.ZAdd(ctx, setKey, entry)
 			return nil
 		})
 		return err
-	}, pendingKey, totalKey, idKey)
+	}, pendingKey, totalKey, setKey)
 
 	if err != nil {
 		return HeadpatCount{}, err
@@ -137,23 +142,72 @@ func (s *redisStore) AddPendingEvent(eventName, id string) (HeadpatCount, error)
 	return count, nil
 }
 
-func (s *redisStore) EventExists(eventName, id string) bool {
+func (s *redisStore) AddRemainingHeadpats(streamId string, count int) error {
 	ctx := context.Background()
-	key := "event:" + eventName + ":id:" + id
+
+	// Get ts of last stream
+	streamOnlineResult := s.client.ZPopMax(ctx, "stream:online", 1).Val()
+	if len(streamOnlineResult) == 0 {
+		err := fmt.Errorf("No stream found")
+		return err
+	}
+
+	// Make sure stream matches expected
+	streamStart := streamOnlineResult[0]
+	if streamStart.Member != streamId {
+		err := fmt.Errorf("Stream ID does not match")
+		return err
+	}
+
+	// Get headpats from this stream
+	ts := time.Unix(int64(streamStart.Score), 0).Add(-5 * time.Minute)
+	min := fmt.Sprintf("(%d", ts.Unix())
+	countThisStream := int(s.client.ZCount(ctx, "stream:headpats", min, "+inf").Val())
+	if countThisStream == 0 {
+		err := fmt.Errorf("No headpats found this stream")
+		return err
+	}
+
+	diff := count - max(count, countThisStream)
+	if diff == 0 {
+		return NoChange
+	}
+
+	pendingKey := "event:headpat:pending"
+	totalKey := "event:headpat:total"
+	err := s.client.Watch(ctx, func(tx *redis.Tx) error {
+		_, err := tx.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
+			pipe.Incr(ctx, pendingKey)
+			pipe.Incr(ctx, totalKey)
+			return nil
+		})
+		return err
+	}, pendingKey, totalKey)
+
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func (s *redisStore) HeadpatExists(id string) bool {
+	ctx := context.Background()
+	key := "event:headpat:id:" + id
 	count := s.client.Exists(ctx, key).Val()
 	return count > 0
 }
 
-func (s *redisStore) FulfillEvent(eventName string, number int) (HeadpatCount, error) {
+func (s *redisStore) FulfillHeadpats(number int) (HeadpatCount, error) {
 	ctx := context.Background()
 
-	pendingKey := "event:" + eventName + ":pending"
+	pendingKey := "event:headpat:pending"
 	pending, err := s.client.Get(ctx, pendingKey).Int()
 	if err != nil && err != redis.Nil {
 		return HeadpatCount{}, err
 	}
 
-	totalKey := "event:" + eventName + ":total"
+	totalKey := "event:headpat:total"
 	total, err := s.client.Get(ctx, totalKey).Int()
 	if err != nil && err != redis.Nil {
 		return HeadpatCount{}, err
@@ -182,16 +236,16 @@ func (s *redisStore) FulfillEvent(eventName string, number int) (HeadpatCount, e
 	return count, nil
 }
 
-func (s *redisStore) GetHeadpatCount(eventName string) (HeadpatCount, error) {
+func (s *redisStore) GetHeadpatCount() (HeadpatCount, error) {
 	ctx := context.Background()
 
-	pendingKey := "event:" + eventName + ":pending"
+	pendingKey := "event:headpat:pending"
 	pending, err := s.client.Get(ctx, pendingKey).Int()
 	if err != nil && err != redis.Nil {
 		return HeadpatCount{}, err
 	}
 
-	totalKey := "event:" + eventName + ":total"
+	totalKey := "event:headpat:total"
 	total, err := s.client.Get(ctx, totalKey).Int()
 	if err != nil && err != redis.Nil {
 		return HeadpatCount{}, err
@@ -204,32 +258,27 @@ func (s *redisStore) GetHeadpatCount(eventName string) (HeadpatCount, error) {
 	return count, nil
 }
 
-func (s *redisStore) AddStreamStartEvent(id, startTime string) error {
+func (s *redisStore) AddStreamStartEvent(streamId string, timestamp time.Time) error {
 	ctx := context.Background()
-	key := "stream:" + id + ":start"
-	return s.client.Set(ctx, key, startTime, streamLifetime).Err()
+	setKey := "stream:online"
+	entry := redis.Z{Member: streamId, Score: float64(timestamp.Unix())}
+	return s.client.ZAdd(ctx, setKey, entry).Err()
 }
 
-func (s *redisStore) AddNumRedeemedThisStream(streamId string, count int) error {
+func (s *redisStore) AddOutOfStockEvent(streamId string, timestamp time.Time) error {
 	ctx := context.Background()
-	key := "stream:" + streamId + ":num-redeemed"
-	return s.client.Set(ctx, key, count, streamLifetime).Err()
+	setKey := "stream:out-ouf-stock"
+	entry := redis.Z{Member: streamId, Score: float64(timestamp.Unix())}
+	return s.client.ZAdd(ctx, setKey, entry).Err()
 }
 
-func (s *redisStore) GetNumRedeemedThisStream(streamId string) (int, error) {
+func (s *redisStore) IsOutOfStock() bool {
 	ctx := context.Background()
-	key := "stream:" + streamId + ":num-redeemed"
-	count, err := s.client.Get(ctx, key).Int()
-	if err != nil && err != redis.Nil {
-		return 0, err
-	}
-	return count, nil
-}
-
-func (s *redisStore) AddOutOfStockEvent(id, timestamp string) error {
-	ctx := context.Background()
-	key := "stream:" + id + ":out-of-stock"
-	return s.client.Set(ctx, key, timestamp, streamLifetime).Err()
+	setKey := "stream:out-ouf-stock"
+	ts := time.Now().Add(-15 * time.Minute)
+	min := fmt.Sprintf("(%d", ts.Unix())
+	result := s.client.ZCount(ctx, setKey, min, "+inf").Val()
+	return result > 0
 }
 
 func (s *redisStore) ScoreboardIncr(boardName, userName string, points float64) error {

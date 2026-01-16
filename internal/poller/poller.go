@@ -60,11 +60,14 @@ func (p *HeadpatPoller) doPoll() bool {
 		} else {
 			count := *reward.RedemptionsRedeemedCurrentStream
 			log.Printf("HeadpatPoller(streamId: %s) Status: { Redeemed: %v, Out of Stock: %t }\n", p.streamId, count, !reward.IsInStock)
-			p.st.AddNumRedeemedThisStream(p.streamId, count)
 			if count > 0 && !reward.IsInStock {
 				log.Println("Headpats out of stock!")
-				timestamp := string(time.Now().Format(time.RFC3339Nano))
-				p.st.AddOutOfStockEvent(p.streamId, timestamp)
+				p.st.AddOutOfStockEvent(p.streamId, time.Now())
+				time.Sleep(1 * time.Second)
+				err := p.st.AddRemainingHeadpats(p.streamId, count)
+				if err != nil {
+					log.Printf("Error adding remaining headpats: %s\n", err)
+				}
 				return false
 			}
 		}
