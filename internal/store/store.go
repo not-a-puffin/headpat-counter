@@ -334,8 +334,7 @@ func (s *redisStore) GetScoreByUser(boardName string, userName string) (ScoreEnt
 	return entry, nil
 }
 
-func (s *redisStore) ResetScoreboard(boardName string) error {
+func (s *redisStore) ResetScoreboard(key string) error {
 	ctx := context.Background()
-	key := "scoreboard:" + boardName
 	return s.client.Unlink(ctx, key).Err()
 }
