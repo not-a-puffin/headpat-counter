@@ -143,15 +143,21 @@ func (h *Handler) handleNotification(notification NotificationPayload) {
 		}
 
 		if h.shouldAddHeadpat(event) {
+			err := h.st.ScoreboardIncr("headpat", event.UserLogin, 1)
+			if err != nil {
+				log.Printf("Error: Failed to increment scoreboard: %s\n", err)
+			}
+
+			// Don't add pending headpat if the reward is out-of-stock
+			if h.st.IsOutOfStock() {
+				log.Println("Skipping headpat: already out of stock")
+				break
+			}
+
 			newCount, err := h.st.AddPendingHeadpat(event.Id)
 			if err != nil {
 				log.Printf("Error: Failed to add headpat event: %s\n", err)
 				break
-			}
-
-			err = h.st.ScoreboardIncr("headpat", event.UserLogin, 1)
-			if err != nil {
-				log.Printf("Error: Failed to increment scoreboard: %s\n", err)
 			}
 
 			h.cm.SendAll(client.HeadpatMessage{
@@ -225,12 +231,6 @@ func (h *Handler) shouldAddHeadpat(event ChannelPointsRedemptionEvent) bool {
 	// Skip this headpat if it has already been counted
 	if h.st.HeadpatExists(event.Id) {
 		log.Println("Skipping headpat that was already recorded")
-		return false
-	}
-
-	// Skip this headpat if the reward is out-of-stock
-	if h.st.IsOutOfStock() {
-		log.Println("Skipping headpat: already out of stock")
 		return false
 	}
 
