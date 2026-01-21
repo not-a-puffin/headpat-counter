@@ -13,7 +13,6 @@ import (
 	"log"
 	"net/http"
 	"os"
-	"sync"
 	"time"
 )
 
@@ -186,16 +185,7 @@ func (h *Handler) handleNotification(notification NotificationPayload) {
 
 		poller.CurrentStreamId = event.Id
 		headpatPoller := poller.NewHeadpatPoller(h.cfg, h.st, event.Id)
-
-		var wg sync.WaitGroup
-		wg.Add(1)
-
-		go func() {
-			defer wg.Done()
-			headpatPoller.Start(ctx)
-		}()
-
-		wg.Wait()
+		headpatPoller.Start(ctx)
 
 		// Add one final headpat message
 		count, err := h.st.GetHeadpatCount()
